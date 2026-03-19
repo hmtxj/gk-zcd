@@ -86,3 +86,6 @@ fix_import.py
 /upload_deploy.sh
 /分析.md
 /修复.md
+
+# 排除不需要推送的非本项目代码
+注意这不是本项目的 代码/

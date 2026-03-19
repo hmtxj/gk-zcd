@@ -789,45 +789,12 @@ def gen_password() -> str:
 
 
 def build_code_candidates(code: str) -> list[str]:
-    ambiguous_map = {
-        "0": ("O",),
-        "O": ("0",),
-        "1": ("I", "L"),
-        "I": ("1", "L"),
-        "L": ("1", "I"),
-        "5": ("S",),
-        "S": ("5",),
-        "2": ("Z",),
-        "Z": ("2",),
-        "6": ("G",),
-        "G": ("6",),
-        "8": ("B",),
-        "B": ("8",),
-    }
     compact = re.sub(r"[\s\u00A0\u2009\u202F]+", "", str(code or "")).upper()
-    candidates: list[str] = []
-    seen: set[str] = set()
-
-    def _add(candidate: str):
-        normalized = (candidate or "").strip().upper()
-        if not normalized or normalized in seen:
-            return
-        seen.add(normalized)
-        candidates.append(normalized)
-
-    _add(compact)
-    if "-" in compact:
-        _add(compact.replace("-", ""))
-
-    for idx, ch in enumerate(compact):
-        for replacement in ambiguous_map.get(ch, ()):
-            mutated = compact[:idx] + replacement + compact[idx + 1:]
-            _add(mutated)
-            if "-" in mutated:
-                _add(mutated.replace("-", ""))
-        if len(candidates) >= 10:
-            break
-
+    candidates = []
+    if compact:
+        candidates.append(compact)
+        if "-" in compact:
+            candidates.append(compact.replace("-", ""))
     return candidates or [compact]
 
 

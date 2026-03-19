@@ -50,18 +50,19 @@ def _safe_print(message: Any):
 
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-_CODE_TOKEN_RE = r"\d{3}(?:[-\s\u00A0\u2009\u202F]?\d{3})"
+_CODE_TOKEN_RE = r"(?:\d{3}[-\s\u00A0\u2009\u202F]?\d{3}|[A-Za-z0-9]{3}-[A-Za-z0-9]{3})"
 _MAILTM_ALNUM_CODE_RE = re.compile(r"(?i)\b([A-Z0-9]{3}-[A-Z0-9]{3})\b")
 _CODE_PATTERNS = [
     re.compile(r"\b(\d{3}-\d{3})\b"),
     re.compile(r"\b(\d{6})\b"),
+    re.compile(r"(?i)\b([A-Z0-9]{3}-[A-Z0-9]{3})\b"),
 ]
 _CODE_CONTEXT_PATTERNS = [
     re.compile(
-        rf"(?is)(?:verification\s*(?:code|pin|otp)|verify\s*code|one[-\s]?time\s*(?:password|passcode|code)|security\s*code|login\s*code|confirmation\s*code|验证码|驗證碼|校验码|校驗碼|动态码|动态密码)\D{{0,40}}({_CODE_TOKEN_RE})"
+        rf"(?is)(?:verification\s*(?:code|pin|otp)|verify\s*code|one[-\s]?time\s*(?:password|passcode|code)|security\s*code|login\s*code|confirmation\s*code|验证码|驗證碼|校验码|校驗码|动态码|动态密码)\D{{0,40}}({_CODE_TOKEN_RE})"
     ),
     re.compile(
-        rf"(?is)\b({_CODE_TOKEN_RE})\b\D{{0,40}}(?:is\s+your\s+(?:verification\s*code|pin|otp|security\s*code|login\s*code|confirmation\s*code)|(?:用于|作为).{{0,12}}(?:验证码|校验码|驗證碼)|验证码|驗證碼|校验码)"
+        rf"(?is)\b({_CODE_TOKEN_RE})\b\D{{0,40}}(?:is\s+your\s+(?:verification\s*code|pin|otp|security\s*code|login\s*code|confirmation\s*code)|xAI\s+confirmation\s+code|(?:用于|作为).{{0,12}}(?:验证码|校验码|驗證碼|验证码))"
     ),
 ]
 _STYLE_BLOCK_RE = re.compile(r"(?is)<style\b.*?>.*?</style>")
@@ -73,8 +74,9 @@ _FALLBACK_DOMAIN = "hmtxj.de5.net"
 _DEFAULT_MAILTM_BASE = "https://api.mail.tm"
 
 
-def _random_local_part(prefix: str = "xai") -> str:
-    return prefix + "".join(random.choices(string.ascii_lowercase + string.digits, k=10))
+def _random_local_part(prefix: str = "") -> str:
+    k = random.randint(9, 12)
+    return prefix + "".join(random.choices(string.ascii_lowercase + string.digits, k=k))
 
 
 def _random_secret(length: int = 18) -> str:
@@ -165,11 +167,6 @@ def _extract_mailbox_id(payload: Any) -> str:
 
 def _normalize_code(code: str) -> str:
     compact = re.sub(r"[\s\u00A0\u2009\u202F]+", "", str(code or "")).upper()
-    digits = re.sub(r"\D+", "", compact)
-    if len(digits) == 6 and re.fullmatch(r"[\d-]+", compact):
-        return digits
-    if _MAILTM_ALNUM_CODE_RE.fullmatch(compact):
-        return compact
     return compact.replace("-", "").strip()
 
 
@@ -431,13 +428,19 @@ class AsyncImMailClient:
         self._mailtm_password = ""
         self._mailtm_account_id = ""
         self._mailtm_seen_message_ids: set[str] = set()
+        self.im_mail_jwt_token = ""
 
     def _headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/json, text/plain, */*",
             "User-Agent": "grok-im-mail-client/1.0",
         }
-        if self.api_auth_token:
+        if self.im_mail_jwt_token:
+            headers["Authorization"] = f"Bearer {self.im_mail_jwt_token}"
+            if self.api_auth_token:
+                headers["X-Auth-Token"] = self.api_auth_token
+                headers["X-API-Key"] = self.api_auth_token
+        elif self.api_auth_token:
             headers["Authorization"] = f"Bearer {self.api_auth_token}"
             headers["X-Auth-Token"] = self.api_auth_token
             headers["X-API-Key"] = self.api_auth_token
@@ -615,6 +618,7 @@ class AsyncImMailClient:
         self.provider = "im_mail"
         self.email = ""
         self.mailbox_id = ""
+        self.im_mail_jwt_token = ""
         self._mailtm_token = ""
         self._mailtm_password = ""
         self._mailtm_account_id = ""
@@ -642,6 +646,7 @@ class AsyncImMailClient:
             "local_part": local_part,
             "localPart": local_part,
             "name": local_part,
+            "domain": target_domain,
         }
         candidates = [
             ("POST", "/api/mailboxes", {"json": payload}),
@@ -675,6 +680,9 @@ class AsyncImMailClient:
             self.provider = "im_mail"
             self.email = _extract_email_from_payload(data, desired_email)
             self.mailbox_id = _extract_mailbox_id(data)
+            token_candidate = _deep_find_by_keys(data, {"token", "jwt", "access_token"})
+            if token_candidate:
+                self.im_mail_jwt_token = str(token_candidate).strip()
             return self.email
 
         try:
@@ -702,6 +710,14 @@ class AsyncImMailClient:
     def _message_poll_candidates(self, remaining_timeout: int) -> list[tuple[str, str]]:
         encoded_email = quote_plus(self.email)
         candidates: list[tuple[str, str]] = []
+
+        if self.im_mail_jwt_token:
+            candidates.extend(
+                [
+                    ("GET", "/api/emails?limit=5"),
+                    ("GET", "/emails?limit=5"),
+                ]
+            )
 
         if self.mailbox_id:
             mailbox_id = quote_plus(self.mailbox_id)
