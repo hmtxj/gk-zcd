@@ -1,0 +1,2909 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grok Register Server</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Vue 3 CDN -->
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['"PingFang SC"', '"Microsoft YaHei"', '-apple-system', 'sans-serif'],
+                        mono: ['"SF Mono"', 'Consolas', 'monospace'],
+                    },
+                    colors: {
+                        brand: {
+                            blue: '#1677FF',       // 商业蓝 (经典 Ant Design 蓝)
+                            blueLight: '#E6F4FF',
+                            textMain: '#1F2937',   // 深灰主文本
+                            textSub: '#6B7280',    // 中灰次文本
+                            bg: '#F8FAFC',         // 全局极浅灰底色
+                            card: '#FFFFFF',       // 卡片白
+                            border: '#F3F4F6'      // 极浅卡片边框
+                        },
+                        status: {
+                            success: '#10B981', // 绿
+                            error: '#EF4444',   // 红
+                            warning: '#F59E0B', // 黄
+                        }
+                    },
+                    boxShadow: {
+                        'soft': '0 4px 6px -1px rgba(0, 0, 0, 0.02), 0 2px 4px -1px rgba(0, 0, 0, 0.02)', // 轻微发散的阴影
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        :root {
+            --bg-sidebar: #fdfbf7;
+            --bg-main: #f5f3ef;
+            --bg-elevated: #ffffff;
+            --bg-elevated-soft: #fcfaf7;
+            --border-color: #e6e2db;
+            --border-soft: #f0ebe4;
+            --text-primary: #292524;
+            --text-secondary: #57534e;
+            --text-tertiary: #a8a29e;
+            --accent-color: #3b82f6;
+            --accent-hover: #2563eb;
+            --accent-soft: rgba(59, 130, 246, 0.12);
+            --success-color: #10b981;
+            --warning-color: #f59e0b;
+            --danger-color: #ef4444;
+            --shadow-soft: 0 16px 34px rgba(41, 37, 36, 0.08);
+            --shadow-card: 0 24px 54px rgba(41, 37, 36, 0.1);
+            --radius-sm: 8px;
+            --radius-md: 12px;
+            --radius-lg: 16px;
+            --radius-xl: 20px;
+            --radius-2xl: 28px;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        .hide-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+
+        .hide-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        body.app-theme {
+            background: linear-gradient(180deg, #f8f4ed 0%, #f2eee7 100%);
+            color: var(--text-primary);
+        }
+
+        #app.console-app {
+            width: 100%;
+            max-width: none;
+            min-height: 100vh;
+            padding: 16px;
+            gap: 16px;
+            background: transparent;
+        }
+
+        .console-sidebar {
+            width: 292px;
+            background: #fdfbf7;
+            border: 1px solid rgba(230, 226, 219, 0.96);
+            border-radius: 28px;
+            box-shadow: 0 10px 24px rgba(41, 37, 36, 0.05);
+            padding: 18px 0;
+            overflow: hidden;
+        }
+
+        .console-brand {
+            height: auto !important;
+            margin: 0 20px;
+            padding: 6px 4px 18px;
+            border-bottom: 1px solid var(--border-soft);
+            gap: 14px;
+        }
+
+        .console-brand-logo {
+            width: 44px;
+            height: 44px;
+            border-radius: 16px;
+            background: linear-gradient(135deg, var(--accent-color), var(--accent-hover));
+            color: #ffffff;
+            box-shadow: 0 16px 32px rgba(59, 130, 246, 0.26);
+            flex-shrink: 0;
+        }
+
+        .console-brand-logo svg {
+            width: 20px;
+            height: 20px;
+        }
+
+        .console-brand-text h1 {
+            margin: 0;
+            font-size: 18px;
+            line-height: 1.1;
+            letter-spacing: -0.04em;
+            color: var(--text-primary);
+            font-weight: 700;
+        }
+
+        .console-brand-text p {
+            margin: 4px 0 0;
+            font-size: 12px;
+            color: var(--text-secondary);
+            letter-spacing: 0.08em;
+        }
+
+        .console-nav {
+            padding: 0 14px;
+            gap: 8px !important;
+            margin-top: 18px !important;
+        }
+
+        .nav-section-label {
+            padding: 0 14px;
+            margin-bottom: 8px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.18em;
+            color: var(--text-tertiary);
+            text-transform: uppercase;
+        }
+
+        .console-nav>button {
+            border-radius: 18px !important;
+            padding: 12px 14px !important;
+            color: var(--text-secondary) !important;
+            border: 1px solid transparent;
+            transition: background-color 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+        }
+
+        .console-nav>button:hover {
+            background: rgba(255, 255, 255, 0.82) !important;
+            color: var(--text-primary) !important;
+        }
+
+        .console-nav>button[class*='bg-[#F3F4F6]'] {
+            background: #ffffff !important;
+            color: var(--text-primary) !important;
+            border-color: rgba(230, 226, 219, 0.9) !important;
+            box-shadow: 0 6px 14px rgba(41, 37, 36, 0.05);
+        }
+
+        .console-nav>button>div:first-child {
+            width: 34px !important;
+            height: 34px !important;
+            border-radius: 12px !important;
+            background: transparent !important;
+            color: var(--text-tertiary) !important;
+            transition: background-color 0.16s ease, color 0.16s ease;
+        }
+
+        .console-nav>button:hover>div:first-child {
+            background: rgba(59, 130, 246, 0.08) !important;
+            color: var(--accent-color) !important;
+        }
+
+        .console-nav>button[class*='bg-[#F3F4F6]']>div:first-child {
+            background: var(--accent-soft) !important;
+            color: var(--accent-color) !important;
+        }
+
+        .console-nav span[class*='rounded-full'] {
+            border-radius: 999px !important;
+            padding: 2px 8px !important;
+            background: rgba(59, 130, 246, 0.12) !important;
+            color: var(--accent-color) !important;
+        }
+
+        .sidebar-divider {
+            width: calc(100% - 20px);
+            height: 1px;
+            margin: 6px 10px;
+            background: var(--border-soft);
+        }
+
+        .sidebar-footer {
+            padding-top: 10px !important;
+        }
+
+        .sidebar-footer .sidebar-logout {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 14px;
+            border-radius: 18px !important;
+            border: 1px solid transparent !important;
+            background: transparent !important;
+            color: var(--text-secondary) !important;
+            font-weight: 600;
+            transition: background-color 0.16s ease, color 0.16s ease, border-color 0.16s ease;
+        }
+
+        .sidebar-footer .sidebar-logout:hover {
+            background: rgba(255, 255, 255, 0.82) !important;
+            color: var(--text-primary) !important;
+            border-color: rgba(230, 226, 219, 0.82) !important;
+        }
+
+        .sidebar-footer .sidebar-logout-icon {
+            width: 34px;
+            height: 34px;
+            border-radius: 12px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-tertiary);
+            transition: background-color 0.16s ease, color 0.16s ease;
+        }
+
+        .sidebar-footer .sidebar-logout:hover .sidebar-logout-icon {
+            background: rgba(59, 130, 246, 0.08);
+            color: var(--accent-color);
+        }
+
+        .console-main {
+            border: 1px solid rgba(230, 226, 219, 0.7);
+            border-radius: 30px;
+            background: #fbfaf7;
+            box-shadow: 0 12px 26px rgba(41, 37, 36, 0.05);
+            overflow: hidden;
+        }
+
+        .view-page {
+            padding: 28px 32px !important;
+            gap: 24px !important;
+        }
+
+        .view-page>header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 18px;
+            margin-bottom: 0 !important;
+        }
+
+        .view-page>header>div:first-child {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .view-page>header>div:first-child>div:first-child {
+            width: 42px !important;
+            height: 42px !important;
+            border-radius: 16px !important;
+            border: 1px solid rgba(230, 226, 219, 0.96) !important;
+            background: linear-gradient(180deg, #ffffff, #f6f1ea) !important;
+            box-shadow: var(--shadow-soft);
+        }
+
+        .view-page>header h1 {
+            color: var(--text-primary) !important;
+            font-size: 26px !important;
+            font-weight: 700 !important;
+            letter-spacing: -0.04em;
+        }
+
+        .view-page>header p,
+        .view-page>header span[class*='text-[12px]'] {
+            color: var(--text-secondary) !important;
+        }
+
+        .view-page>header>div:last-child>button,
+        .accounts-shell>div:first-child button,
+        .proxy-config-card>button:last-child,
+        .overview-footer>button,
+        .logs-toolbar button,
+        .singbox-block button[class*='px-5'],
+        .singbox-block button[class*='px-6'],
+        .singbox-note button[class*='px-5'] {
+            min-height: 40px;
+            border-radius: 999px !important;
+            padding: 0 18px !important;
+            font-size: 13px !important;
+            font-weight: 600 !important;
+            transition: background-color 0.16s ease, color 0.16s ease, border-color 0.16s ease, opacity 0.16s ease;
+        }
+
+        .view-page>header>div:last-child>button,
+        .accounts-shell>div:first-child button,
+        .logs-toolbar button:not([class*='bg-indigo-600']):not([class*='bg-green-600']):not([class*='bg-gray-900']),
+        .proxy-config-card>button:last-child:not([class*='bg-cyan-600']) {
+            background: rgba(255, 255, 255, 0.96) !important;
+            color: var(--text-secondary) !important;
+            border: 1px solid rgba(230, 226, 219, 0.96) !important;
+            box-shadow: none;
+        }
+
+        .view-page>header>div:last-child>button:hover,
+        .accounts-shell>div:first-child button:hover,
+        .logs-toolbar button:not([class*='bg-indigo-600']):not([class*='bg-green-600']):not([class*='bg-gray-900']):hover,
+        .proxy-config-card>button:last-child:not([class*='bg-cyan-600']):hover {
+            border-color: rgba(59, 130, 246, 0.3) !important;
+            color: var(--accent-color) !important;
+        }
+
+        .overview-footer>button[class*='bg-[#0F172A]'],
+        .proxy-config-card>button:last-child[class*='bg-cyan-600'],
+        .singbox-block button[class*='bg-violet-600'],
+        .singbox-block button[class*='bg-amber-500'],
+        .singbox-block button[class*='bg-[#0F172A]'] {
+            background: linear-gradient(135deg, var(--accent-color), var(--accent-hover)) !important;
+            color: #ffffff !important;
+            border: 1px solid rgba(37, 99, 235, 0.18) !important;
+            box-shadow: 0 8px 18px rgba(59, 130, 246, 0.16);
+        }
+
+        .singbox-block button[class*='bg-green-600'] {
+            background: linear-gradient(135deg, #34d399, #10b981) !important;
+            color: #ffffff !important;
+            border: 1px solid rgba(16, 185, 129, 0.18) !important;
+            box-shadow: 0 8px 18px rgba(16, 185, 129, 0.14);
+        }
+
+        .overview-footer>button[class*='bg-red-500'],
+        .singbox-block button[class*='bg-red-500'] {
+            background: linear-gradient(135deg, #f87171, #ef4444) !important;
+            color: #ffffff !important;
+            border: 1px solid rgba(239, 68, 68, 0.18) !important;
+            box-shadow: 0 8px 18px rgba(239, 68, 68, 0.14);
+        }
+
+        .overview-footer>button:disabled,
+        .proxy-config-card>button:last-child:disabled,
+        .singbox-block button:disabled,
+        .view-page>header>div:last-child>button:disabled,
+        .accounts-shell>div:first-child button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none !important;
+            box-shadow: none !important;
+        }
+
+        .metrics-grid,
+        .proxy-metrics {
+            gap: 16px !important;
+        }
+
+        .metrics-grid>div,
+        .proxy-metrics>div {
+            background: #ffffff !important;
+            border: 1px solid rgba(230, 226, 219, 0.96) !important;
+            border-radius: 24px !important;
+            box-shadow: 0 8px 18px rgba(41, 37, 36, 0.04);
+            padding: 22px !important;
+            transition: border-color 0.16s ease, background-color 0.16s ease;
+        }
+
+        .metrics-grid>div:hover,
+        .proxy-metrics>div:hover {
+            border-color: rgba(221, 214, 206, 0.96) !important;
+        }
+
+        .overview-workbench,
+        .monitor-shell,
+        .logs-shell,
+        .accounts-shell,
+        .proxy-direct-card,
+        .proxy-table-card,
+        .proxy-config-card,
+        .singbox-block,
+        .singbox-note {
+            background: #ffffff !important;
+            border: 1px solid rgba(230, 226, 219, 0.96) !important;
+            border-radius: 28px !important;
+            box-shadow: 0 10px 22px rgba(41, 37, 36, 0.04);
+        }
+
+        .overview-workbench,
+        .monitor-shell,
+        .singbox-block {
+            padding: 28px 32px !important;
+        }
+
+        .overview-workbench>h2,
+        .monitor-shell h3,
+        .logs-shell h2,
+        .accounts-shell h2,
+        .singbox-block h2,
+        .singbox-note h3 {
+            color: var(--text-primary) !important;
+        }
+
+        .overview-workbench>.grid>div {
+            background: linear-gradient(180deg, #ffffff, var(--bg-elevated-soft)) !important;
+            border: 1px solid rgba(230, 226, 219, 0.96) !important;
+            border-radius: 24px !important;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.76);
+        }
+
+        .overview-workbench input[type='number'],
+        .proxy-config-card input,
+        .proxy-config-card select,
+        .logs-toolbar select,
+        .logs-toolbar input,
+        .singbox-block input[type='text'],
+        .singbox-block input[type='number'] {
+            min-height: 46px;
+            background: rgba(255, 255, 255, 0.92) !important;
+            border: 1px solid rgba(230, 226, 219, 0.96) !important;
+            border-radius: 16px !important;
+            color: var(--text-primary) !important;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
+        }
+
+        .overview-workbench input[type='number']:focus,
+        .proxy-config-card input:focus,
+        .proxy-config-card select:focus,
+        .logs-toolbar select:focus,
+        .logs-toolbar input:focus,
+        .singbox-block input[type='text']:focus,
+        .singbox-block input[type='number']:focus {
+            outline: none;
+            border-color: rgba(59, 130, 246, 0.38) !important;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.08) !important;
+        }
+
+        .overview-workbench input[type='number'] {
+            padding: 10px 16px 12px !important;
+            border-bottom-width: 1px !important;
+            font-size: 44px !important;
+            letter-spacing: -0.05em;
+        }
+
+        .overview-solver-note {
+            background: linear-gradient(180deg, rgba(248, 250, 252, 0.92), rgba(255, 255, 255, 0.96)) !important;
+            border: 1px solid rgba(230, 226, 219, 0.96) !important;
+            border-radius: 24px !important;
+        }
+
+        .overview-solver-note .grid>div {
+            background: rgba(255, 255, 255, 0.92) !important;
+            border: 1px solid rgba(230, 226, 219, 0.9) !important;
+            border-radius: 18px !important;
+        }
+
+        .overview-footer {
+            padding-top: 24px !important;
+            border-top: 1px solid var(--border-soft) !important;
+        }
+
+        .monitor-shell {
+            gap: 28px !important;
+        }
+
+        .monitor-shell>.grid>div {
+            background: linear-gradient(180deg, #ffffff, var(--bg-elevated-soft));
+            border: 1px solid rgba(230, 226, 219, 0.96);
+            border-radius: 22px;
+            padding: 18px;
+        }
+
+        .logs-shell>div:first-child,
+        .accounts-shell>div:first-child,
+        .proxy-direct-card>div:first-child,
+        .proxy-table-card>div:first-child,
+        .logs-toolbar {
+            background: rgba(253, 251, 247, 0.78) !important;
+            border-color: var(--border-soft) !important;
+        }
+
+        .logs-shell #log-container {
+            background: #fffdf8 !important;
+            color: var(--text-secondary);
+        }
+
+        .logs-shell #log-container>div:hover {
+            background: rgba(59, 130, 246, 0.06) !important;
+        }
+
+        .accounts-shell table thead,
+        .proxy-table-card table thead {
+            background: rgba(253, 251, 247, 0.92) !important;
+        }
+
+        .accounts-shell tbody tr:hover,
+        .proxy-table-card tbody tr:hover {
+            background: rgba(59, 130, 246, 0.05) !important;
+        }
+
+        .proxy-config-card {
+            padding: 18px 22px !important;
+            background: linear-gradient(180deg, rgba(248, 250, 252, 0.92), rgba(255, 255, 255, 0.96)) !important;
+        }
+
+        .proxy-direct-card,
+        .proxy-table-card {
+            min-height: 400px;
+        }
+
+        .singbox-block .grid>div {
+            border-radius: 20px !important;
+        }
+
+        .singbox-note {
+            background: linear-gradient(180deg, rgba(248, 250, 252, 0.88), rgba(255, 255, 255, 0.94)) !important;
+            border-radius: 24px !important;
+        }
+
+        .cursor-blink {
+            animation: blink 1s step-end infinite;
+        }
+
+        @keyframes blink {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0;
+            }
+        }
+
+        .custom-scroll::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        .custom-scroll::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .custom-scroll::-webkit-scrollbar-thumb {
+            background: rgba(168, 162, 158, 0.45);
+            border-radius: 999px;
+        }
+
+        .custom-scroll::-webkit-scrollbar-thumb:hover {
+            background: rgba(120, 113, 108, 0.55);
+        }
+
+        .password-blur {
+            opacity: 0.72;
+            transition: opacity 0.16s ease, background-color 0.16s ease;
+            cursor: pointer;
+            padding: 2px 4px;
+            border-radius: 4px;
+        }
+
+        .password-cell:hover .password-blur {
+            opacity: 1;
+            background-color: #f5f5f4;
+        }
+
+        .fade-enter-active,
+        .fade-leave-active {
+            transition: opacity 0.12s ease;
+        }
+
+        .fade-enter-from,
+        .fade-leave-to {
+            opacity: 0;
+        }
+
+        @media (max-width: 1080px) {
+            #app.console-app {
+                padding: 14px;
+                gap: 14px;
+            }
+
+            .console-sidebar {
+                width: 256px;
+            }
+
+            .view-page {
+                padding: 22px !important;
+            }
+        }
+
+        @media (max-width: 900px) {
+            #app.console-app {
+                flex-direction: column;
+                min-height: auto;
+            }
+
+            .console-sidebar {
+                width: 100%;
+                height: auto !important;
+            }
+
+            .console-main {
+                min-height: calc(100vh - 220px);
+            }
+
+            .view-page>header {
+                flex-direction: column;
+            }
+        }
+
+        /* 登录鉴权拦截网样式扩展 (浅色米白系) */
+        .login-gate {
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            background: linear-gradient(180deg, #f8f4ed 0%, #f2eee7 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: opacity 0.4s ease, visibility 0.4s ease;
+        }
+
+        .login-gate.hidden {
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+        }
+
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(230, 226, 219, 0.8);
+            border-radius: 24px;
+            padding: 40px;
+            width: 100%;
+            max-width: 400px;
+            text-align: center;
+            box-shadow: 0 24px 54px rgba(41, 37, 36, 0.08);
+        }
+
+        .login-title {
+            color: #292524;
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 24px;
+            letter-spacing: 1px;
+        }
+
+        .login-input {
+            width: 100%;
+            background: #fdfbf7;
+            border: 1px solid #e6e2db;
+            color: #292524;
+            border-radius: 12px;
+            padding: 14px 16px;
+            margin-bottom: 16px;
+            font-size: 15px;
+            outline: none;
+            transition: all 0.2s ease;
+            text-align: center;
+            letter-spacing: 4px;
+            font-weight: 500;
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.02);
+        }
+
+        .login-input::placeholder {
+            color: #a8a29e;
+            letter-spacing: 1px;
+            font-weight: normal;
+        }
+
+        .login-input:focus {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
+        }
+
+        .login-btn-submit {
+            width: 100%;
+            background: linear-gradient(135deg, #3b82f6, #2563eb);
+            color: #fff;
+            border: none;
+            border-radius: 12px;
+            padding: 14px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.1s;
+        }
+
+        .login-btn-submit:active {
+            transform: scale(0.98);
+        }
+
+        .login-error {
+            color: #ef4444;
+            font-size: 13px;
+            margin-top: 12px;
+            min-height: 20px;
+            display: block;
+        }
+    </style>
+</head>
+
+<body
+    class="app-theme font-sans text-brand-textMain antialiased min-h-screen flex selection:bg-brand-blueLight selection:text-brand-blue">
+
+    <div id="app" class="console-app flex w-full h-screen overflow-hidden max-w-[1920px] mx-auto">
+
+        <!-- 登录拦截层：若未授权则覆盖整个界面底层 -->
+        <div class="login-gate" :class="{ hidden: isAuthenticated }">
+            <div class="glass-panel">
+                <div class="console-brand-logo mx-auto mb-6 flex items-center justify-center">
+                    <svg class="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                        stroke-width="2.5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                </div>
+                <h2 class="login-title">管理后台认证</h2>
+                <div>
+                    <input type="password" v-model="loginPassword" class="login-input" placeholder="输入访问密码"
+                        @keyup.enter="doLogin" />
+                    <button class="login-btn-submit" @click="doLogin" :disabled="isLoggingIn">
+                        {{ isLoggingIn ? '验证中...' : '验证身份' }}
+                    </button>
+                    <div class="login-error">{{ loginError }}</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ======================= 左侧：全局导航 (Sidebar) ======================= -->
+        <!-- 左侧菜单宽度加宽，增强商业感 -->
+        <aside
+            class="console-sidebar w-[260px] bg-white border-r border-gray-200 flex flex-col shrink-0 h-full relative z-20">
+            <!-- 顶部 Logo 组合 (仿 Gemini 后台左上角) -->
+            <div class="console-brand h-[72px] flex items-center px-6 gap-3 shrink-0 border-b border-transparent">
+                <div class="console-brand-logo flex items-center justify-center">
+                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                </div>
+                <div class="console-brand-text">
+                    <h1>Grok Register</h1>
+                    <p>极简 · 稳定 · 控制台</p>
+                </div>
+            </div>
+
+            <!-- 主导航菜单 (极其干净的形式) -->
+            <div class="console-nav px-3 flex-1 flex flex-col gap-1.5 mt-4">
+                <div class="nav-section-label text-[12px] font-medium text-gray-400 mb-2 px-3">工作台</div>
+
+                <!-- 导航条目 1: 概览中心 -->
+                <button @click="currentTab = 'Overview'"
+                    class="w-full flex items-center gap-3 px-4 py-2.5 rounded-[12px] font-medium transition-all duration-200 group"
+                    :class="currentTab === 'Overview' ? 'bg-[#F3F4F6] text-gray-900' : 'text-gray-500 hover:bg-gray-50'">
+                    <div class="w-[28px] h-[28px] rounded flex items-center justify-center transition-colors"
+                        :class="currentTab === 'Overview' ? 'bg-gray-200 text-gray-700' : 'bg-transparent text-gray-400 group-hover:text-gray-600'">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path
+                                d="M5 3a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2H5zM5 11a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2a2 2 0 00-2-2H5zM11 5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V5zM11 13a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+                        </svg>
+                    </div>
+                    <span class="text-[14px]">概览中心</span>
+                </button>
+
+                <!-- 导航条目 2: 账号管理 -->
+                <button @click="currentTab = 'Accounts'"
+                    class="w-full flex items-center gap-3 px-4 py-2.5 rounded-[12px] font-medium transition-all duration-200 group"
+                    :class="currentTab === 'Accounts' ? 'bg-[#F3F4F6] text-gray-900' : 'text-gray-500 hover:bg-gray-50'">
+                    <div class="w-[28px] h-[28px] rounded flex items-center justify-center transition-colors"
+                        :class="currentTab === 'Accounts' ? 'bg-gray-200 text-gray-700' : 'bg-transparent text-gray-400 group-hover:text-gray-600'">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z"
+                                clip-rule="evenodd" />
+                        </svg>
+                    </div>
+                    <span class="text-[14px]">账号详情</span>
+                </button>
+
+                <div class="sidebar-divider"></div>
+
+                <!-- 导航条目 3: 监控状态 -->
+                <button @click="currentTab = 'Monitor'"
+                    class="w-full flex items-center gap-3 px-4 py-2.5 rounded-[12px] font-medium transition-all duration-200 group"
+                    :class="currentTab === 'Monitor' ? 'bg-[#F3F4F6] text-gray-900' : 'text-gray-500 hover:bg-gray-50'">
+                    <div class="w-[28px] h-[28px] rounded flex items-center justify-center transition-colors"
+                        :class="currentTab === 'Monitor' ? 'bg-gray-200 text-gray-700' : 'bg-transparent text-gray-400 group-hover:text-gray-600'">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd"
+                                d="M3 3a1 1 0 000 2v8a2 2 0 002 2h2.586l-1.293 1.293a1 1 0 101.414 1.414L10 15.414l2.293 2.293a1 1 0 001.414-1.414L12.414 15H15a2 2 0 002-2V5a1 1 0 100-2H3zm11.707 4.707a1 1 0 00-1.414-1.414L10 9.586 8.707 8.293a1 1 0 00-1.414 0l-2 2a1 1 0 101.414 1.414L8 10.414l1.293 1.293a1 1 0 001.414 0l4-4z"
+                                clip-rule="evenodd" />
+                        </svg>
+                    </div>
+                    <span class="text-[14px]">系统监控</span>
+                </button>
+
+                <!-- 导航条目 4: 运行日志 -->
+                <button @click="currentTab = 'Logs'"
+                    class="w-full flex items-center gap-3 px-4 py-2.5 rounded-[12px] font-medium transition-all duration-200 group"
+                    :class="currentTab === 'Logs' ? 'bg-[#F3F4F6] text-gray-900' : 'text-gray-500 hover:bg-gray-50'">
+                    <div class="w-[28px] h-[28px] rounded flex items-center justify-center transition-colors"
+                        :class="currentTab === 'Logs' ? 'bg-gray-200 text-gray-700' : 'bg-transparent text-gray-400 group-hover:text-gray-600'">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd"
+                                d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z"
+                                clip-rule="evenodd" />
+                        </svg>
+                    </div>
+                    <span class="text-[14px]">运行日志</span>
+                </button>
+
+                <div class="sidebar-divider"></div>
+
+                <!-- 导航条目 5: 节点监控 -->
+                <button @click="currentTab = 'ProxyPool'"
+                    class="w-full flex items-center gap-3 px-4 py-2.5 rounded-[12px] font-medium transition-all duration-200 group"
+                    :class="currentTab === 'ProxyPool' ? 'bg-[#F3F4F6] text-gray-900' : 'text-gray-500 hover:bg-gray-50'">
+                    <div class="w-[28px] h-[28px] rounded flex items-center justify-center transition-colors"
+                        :class="currentTab === 'ProxyPool' ? 'bg-gray-200 text-gray-700' : 'bg-transparent text-gray-400 group-hover:text-gray-600'">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd"
+                                d="M4.083 9h1.946c.089-1.546.383-2.97.837-4.118A6.004 6.004 0 004.083 9zM10 2a8 8 0 100 16 8 8 0 000-16zm0 2c-.076 0-.232.032-.465.262-.238.234-.497.623-.737 1.182-.389.907-.706 2.142-.766 3.556h3.936c-.06-1.414-.377-2.649-.766-3.556-.24-.56-.5-.948-.737-1.182C10.232 4.032 10.076 4 10 4zm3.971 5c-.089-1.546-.383-2.97-.837-4.118A6.004 6.004 0 0115.917 9h-1.946zm-2.003 2H8.032c.06 1.414.377 2.649.766 3.556.24.56.5.948.737 1.182.233.23.389.262.465.262.076 0 .232-.032.465-.262.238-.234.497-.623.737-1.182.389-.907.706-2.142.766-3.556zm1.166 4.118c.454-1.147.748-2.572.837-4.118h1.946a6.004 6.004 0 01-2.783 4.118zm-6.268 0C6.412 13.97 6.118 12.546 6.03 11H4.083a6.004 6.004 0 002.783 4.118z"
+                                clip-rule="evenodd" />
+                        </svg>
+                    </div>
+                    <span class="text-[14px]">节点监控</span>
+                    <span v-if="proxyPool.total > 0"
+                        class="ml-auto text-[11px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 font-bold tabular-nums">{{
+                        proxyPool.total }}</span>
+                </button>
+
+                <!-- 导航条目 6: sing-box 代理池 -->
+                <button @click="currentTab = 'SingBox'"
+                    class="w-full flex items-center gap-3 px-4 py-2.5 rounded-[12px] font-medium transition-all duration-200 group"
+                    :class="currentTab === 'SingBox' ? 'bg-[#F3F4F6] text-gray-900' : 'text-gray-500 hover:bg-gray-50'">
+                    <div class="w-[28px] h-[28px] rounded flex items-center justify-center transition-colors"
+                        :class="currentTab === 'SingBox' ? 'bg-gray-200 text-gray-700' : 'bg-transparent text-gray-400 group-hover:text-gray-600'">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                            <path
+                                d="M2 5a2 2 0 012-2h12a2 2 0 012 2v2a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm0 8a2 2 0 012-2h12a2 2 0 012 2v2a2 2 0 01-2 2H4a2 2 0 01-2-2v-2z" />
+                        </svg>
+                    </div>
+                    <span class="text-[14px]">sing-box</span>
+                    <span v-if="singbox.running" class="ml-auto w-2 h-2 rounded-full bg-green-500"></span>
+                    <span v-else-if="singbox.node_count > 0"
+                        class="ml-auto text-[11px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-bold tabular-nums">{{
+                        singbox.node_count }}</span>
+                </button>
+            </div>
+
+            <!-- 底部退出控件 -->
+            <div class="sidebar-footer p-6 shrink-0">
+                <button type="button" class="sidebar-logout"
+                    onclick="sessionStorage.clear(); localStorage.clear(); window.location.reload();">
+                    <span class="sidebar-logout-icon">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.9">
+                            <path stroke-linecap="round" stroke-linejoin="round"
+                                d="M17 16l4-4m0 0l-4-4m4 4H9m4 8H7a2 2 0 01-2-2V6a2 2 0 012-2h6" />
+                        </svg>
+                    </span>
+                    <span class="text-[14px]">退出登录</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- ======================= 右侧主画卷 (Main Content) 组件化包裹 ======================= -->
+        <main class="console-main flex-1 flex flex-col h-full overflow-hidden bg-[#FAFBFC] relative">
+
+            <!-- ====== 动态组件容器 (配合 Vue 的 Transition 动画) ====== -->
+            <transition name="fade" mode="out-in">
+
+                <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━ [ 视图一：概览中心 (Overview) ] ━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+                <div v-if="currentTab === 'Overview'"
+                    class="view-page view-overview absolute inset-0 overflow-y-auto custom-scroll p-6 md:p-8 flex flex-col gap-6"
+                    key="overview">
+
+                    <!-- 顶头标题条与操作器 -->
+                    <header class="flex items-center justify-between mb-2">
+                        <div class="flex items-center gap-3">
+                            <div
+                                class="w-[32px] h-[32px] rounded-lg bg-indigo-50 flex items-center justify-center shrink-0 border border-indigo-100 flex-shrink-0">
+                                <svg class="w-5 h-5 text-indigo-500" fill="currentColor" viewBox="0 0 20 20">
+                                    <path
+                                        d="M5 3a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2H5zM5 11a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2a2 2 0 00-2-2H5zM11 5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V5zM11 13a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+                                </svg>
+                            </div>
+                            <div>
+                                <h1 class="text-[20px] font-bold text-gray-900 tracking-tight">任务总览</h1>
+                                <p class="text-[13px] text-gray-500 mt-1">集中查看产出数据、运行状态与启动参数</p>
+                            </div>
+                        </div>
+
+                        <div class="flex items-center gap-3">
+                            <button @click="resetStats"
+                                class="h-8 px-4 rounded-[16px] bg-white border border-gray-200 text-[13px] font-medium text-gray-700 hover:text-red-500 hover:border-red-300 transition-colors shadow-soft">
+                                重置统计
+                            </button>
+                            <button @click="fetchStats"
+                                class="h-8 px-4 rounded-[16px] bg-white border border-gray-200 text-[13px] font-medium text-gray-700 hover:text-brand-blue hover:border-brand-blue transition-colors shadow-soft">
+                                立即刷新
+                            </button>
+                            <button @click="currentTab = 'Monitor'"
+                                class="h-8 px-4 rounded-[16px] bg-white border border-gray-200 text-[13px] font-medium text-gray-700 hover:text-brand-blue hover:border-brand-blue transition-colors shadow-soft">
+                                查看监控
+                            </button>
+                        </div>
+                    </header>
+
+                    <!-- 完美复刻的指标卡片矩阵 (四大卡片全盘照抄图片一) -->
+                    <div class="metrics-grid grid grid-cols-1 md:grid-cols-3 gap-5 shrink-0">
+                        <!-- 卡片 1: 账号总数 -->
+                        <div
+                            class="bg-white rounded-[16px] p-5 border border-gray-100 shadow-[0_2px_12px_rgba(0,0,0,0.03)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.06)] transition-shadow">
+                            <div class="flex justify-between items-center mb-4">
+                                <span class="text-[13px] font-medium text-gray-500 tracking-wide">账号总数</span>
+                                <div class="w-[30px] h-[30px] rounded-full bg-blue-50 flex items-center justify-center">
+                                    <svg class="w-4 h-4 text-brand-blue" fill="none" viewBox="0 0 24 24"
+                                        stroke="currentColor" stroke-width="2">
+                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                            d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                                    </svg>
+                                </div>
+                            </div>
+                            <div class="text-[36px] font-bold text-gray-900 leading-none mb-2">{{ stats.totalGenerated
+                                }}</div>
+                            <div class="text-[12px] text-gray-400">数据库累计产出的总记录数量</div>
+                        </div>
+
+                        <!-- 卡片 2: 注册成功 -->
+                        <div
+                            class="bg-white rounded-[16px] p-5 border border-gray-100 shadow-[0_2px_12px_rgba(0,0,0,0.03)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.06)] transition-shadow">
+                            <div class="flex justify-between items-center mb-4">
+                                <span class="text-[13px] font-medium text-gray-500 tracking-wide">注册成功</span>
+                                <div
+                                    class="w-[30px] h-[30px] rounded-full bg-green-50 flex items-center justify-center">
+                                    <svg class="w-4 h-4 text-green-500" fill="none" viewBox="0 0 24 24"
+                                        stroke="currentColor" stroke-width="2">
+                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                            d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                </div>
+                            </div>
+                            <div class="text-[36px] font-bold text-green-600 leading-none mb-2">{{ stats.successCount ||
+                                0 }}</div>
+                            <div class="text-[12px] text-gray-400">本轮引擎运行期间成功注册的账号数</div>
+                        </div>
+
+                        <!-- 卡片 3: 注册失败 -->
+                        <div
+                            class="bg-white rounded-[16px] p-5 border border-gray-100 shadow-[0_2px_12px_rgba(0,0,0,0.03)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.06)] transition-shadow">
+                            <div class="flex justify-between items-center mb-4">
+                                <span class="text-[13px] font-medium text-gray-500 tracking-wide">注册失败</span>
+                                <div class="w-[30px] h-[30px] rounded-full bg-red-50 flex items-center justify-center">
+                                    <svg class="w-4 h-4 text-red-500" fill="none" viewBox="0 0 24 24"
+                                        stroke="currentColor" stroke-width="2">
+                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                            d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                </div>
+                            </div>
+                            <div class="text-[36px] font-bold text-red-500 leading-none mb-2">{{ stats.failCount || 0 }}
+                            </div>
+                            <div class="text-[12px] text-gray-400">过验证码或风控拦截导致的失败数</div>
+                        </div>
+                    </div>
+
+                    <!-- 独立极强的 统筹执行操控台大白板！ -->
+                    <div
+                        class="overview-workbench bg-white rounded-[20px] p-8 border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] flex flex-col min-h-[460px] shrink-0">
+                        <h2 class="text-[16px] font-bold text-gray-900 mb-6 flex items-center gap-2">
+                            🚀 任务启动面板
+                        </h2>
+
+                        <!-- 对称式的配置输入区设计 -->
+                        <div class="grid grid-cols-1 lg:grid-cols-2 gap-10">
+                            <!-- 数量设定 -->
+                            <div
+                                class="p-6 bg-[#FAFAFA] rounded-2xl border border-dashed border-gray-300 relative group transition-colors hover:bg-white hover:border-gray-400">
+                                <div class="text-[14px] font-semibold text-gray-700 mb-1">目标数量</div>
+                                <div class="text-[12px] text-gray-400 mb-4">设置本轮任务计划生成的账号总数</div>
+                                <input type="number" v-model.number="formCount" min="1" max="99999"
+                                    class="w-full text-[48px] font-bold text-gray-900 bg-transparent outline-none pb-2 border-b-2 border-gray-200 focus:border-brand-blue transition-colors px-2"
+                                    :disabled="engineRunning">
+                            </div>
+
+                            <!-- 并发数设定 -->
+                            <div
+                                class="p-6 bg-[#FAFAFA] rounded-2xl border border-dashed border-gray-300 relative group transition-colors hover:bg-white hover:border-gray-400">
+                                <div class="text-[14px] font-semibold text-gray-700 mb-1">并发数量</div>
+                                <div class="text-[12px] text-gray-400 mb-4">按网络与机器性能设置同时运行的线程数</div>
+                                <input type="number" v-model.number="formConcurrency" min="1" max="100"
+                                    class="w-full text-[48px] font-bold text-gray-900 bg-transparent outline-none pb-2 border-b-2 border-gray-200 focus:border-red-400 transition-colors px-2"
+                                    :disabled="engineRunning">
+                            </div>
+                        </div>
+
+                        <!-- 远程 Solver 模式说明 -->
+                        <div
+                            class="overview-solver-note mt-6 p-5 bg-[#F8FAFC] rounded-2xl border border-gray-200 flex flex-col gap-4">
+                            <div class="flex items-center gap-3">
+                                <div
+                                    class="w-[32px] h-[32px] rounded-lg bg-emerald-50 flex items-center justify-center border border-emerald-100">
+                                    <svg class="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24"
+                                        stroke="currentColor" stroke-width="2">
+                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                            d="M13 10V3L4 14h7v7l9-11h-7z" />
+                                    </svg>
+                                </div>
+                                <div>
+                                    <div class="text-[14px] font-semibold text-gray-700">🌐 远程 Solver 模式</div>
+                                    <div class="text-[12px] text-gray-400 mt-0.5">当前面板仅使用远程解题节点提供 Turnstile Token，不再启动本地
+                                        Solver</div>
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                <div class="rounded-xl border border-emerald-100 bg-emerald-50/60 px-4 py-3">
+                                    <div class="text-[12px] text-emerald-600 font-medium mb-1">运行模式</div>
+                                    <div class="text-[14px] font-bold text-emerald-700">Remote API Only</div>
+                                </div>
+                                <div class="rounded-xl border border-blue-100 bg-blue-50/70 px-4 py-3">
+                                    <div class="text-[12px] text-blue-500 font-medium mb-1">节点来源</div>
+                                    <div class="text-[13px] font-medium text-blue-700">`SOLVER_NODES` /
+                                        `solver_nodes.txt`</div>
+                                </div>
+                                <div class="rounded-xl border border-amber-100 bg-amber-50/70 px-4 py-3">
+                                    <div class="text-[12px] text-amber-600 font-medium mb-1">启动要求</div>
+                                    <div class="text-[13px] font-medium text-amber-700">至少 1 个远程节点在线</div>
+                                </div>
+                            </div>
+
+                            <div
+                                class="rounded-xl border border-dashed border-gray-300 bg-white/80 px-4 py-3 text-[12px] text-gray-500 leading-6">
+                                容器内不再启动 Camoufox、本地 Solver 或无头浏览器。若未配置远程节点，启动任务时后端会直接拒绝执行并在日志中提示原因。
+                            </div>
+                        </div>
+
+                        <!-- 现代商业风执行按钮区 -->
+                        <div class="overview-footer mt-8 pt-6 border-t border-gray-100 flex items-center justify-end">
+                            <button v-if="!engineRunning" @click="startEngine" :disabled="isLoading"
+                                class="h-[44px] px-8 rounded-[8px] bg-[#0F172A] hover:bg-[#000000] text-white text-[14px] font-medium transition-colors flex items-center gap-2 disabled:opacity-50 shadow-sm">
+                                <svg v-if="!isLoading" class="w-4 h-4 opacity-90" fill="none" viewBox="0 0 24 24"
+                                    stroke="currentColor" stroke-width="2.5">
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                        d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z">
+                                    </path>
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                        d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                </svg>
+                                <svg v-else class="animate-spin w-4 h-4 text-white" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor"
+                                        stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor"
+                                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+                                    </path>
+                                </svg>
+                                {{ isLoading ? '正在初始化...' : '提交执行任务' }}
+                            </button>
+
+                            <button v-else @click="stopEngine" :disabled="isLoading"
+                                class="h-[44px] px-8 rounded-[8px] bg-red-500 hover:bg-red-600 text-white text-[14px] font-medium transition-colors flex items-center gap-2 disabled:opacity-50 shadow-sm">
+                                <svg v-if="!isLoading" class="w-4 h-4 opacity-90" fill="none" viewBox="0 0 24 24"
+                                    stroke="currentColor" stroke-width="2.5">
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                        d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                        d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"></path>
+                                </svg>
+                                <svg v-else class="animate-spin w-4 h-4 text-white" fill="none" viewBox="0 0 24 24">
+                                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor"
+                                        stroke-width="4"></circle>
+                                    <path class="opacity-75" fill="currentColor"
+                                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z">
+                                    </path>
+                                </svg>
+                                {{ isLoading ? '正在切断连接...' : '强制终止运行' }}
+                            </button>
+                            <!-- 运行计时器 -->
+                            <div v-if="engineRunning" class="flex items-center gap-2 ml-4 text-gray-500">
+                                <svg class="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 24 24">
+                                    <circle cx="12" cy="12" r="6" />
+                                </svg>
+                                <span class="font-mono text-[15px] font-bold text-gray-700 tabular-nums">{{
+                                    formatTime(elapsed) }}</span>
+                            </div>
+                            <div v-else-if="elapsed > 0" class="flex items-center gap-2 ml-4 text-gray-400">
+                                <span class="text-[13px]">上次耗时:</span>
+                                <span class="font-mono text-[15px] font-medium tabular-nums">{{ formatTime(elapsed)
+                                    }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━ [ 视图二：监控状态 (Monitor) ] ━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+                <!-- 完美纯 CSS 还原长条进度密恐监控图 -->
+                <div v-else-if="currentTab === 'Monitor'"
+                    class="view-page view-monitor absolute inset-0 p-6 md:p-8 overflow-y-auto custom-scroll"
+                    key="monitor">
+                    <header class="flex items-center gap-3 mb-6">
+                        <div
+                            class="w-[32px] h-[32px] rounded-lg bg-emerald-50 flex items-center justify-center shrink-0 border border-emerald-100 flex-shrink-0">
+                            <svg class="w-5 h-5 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                stroke-width="2.5">
+                                <path stroke-linecap="round" stroke-linejoin="round"
+                                    d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                            </svg>
+                        </div>
+                        <div>
+                            <h1 class="text-[20px] font-bold text-gray-900 tracking-tight">系统监控</h1>
+                            <p class="text-[13px] text-gray-500 mt-1">查看注册服务、邮件链路与 Solver 资源健康度</p>
+                        </div>
+                    </header>
+
+                    <div
+                        class="monitor-shell bg-white rounded-[16px] p-8 border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] flex flex-col gap-10">
+                        <div class="flex items-center justify-between border-b pb-4">
+                            <div>
+                                <h3 class="text-[16px] font-bold">健康状态总览</h3>
+                                <p class="text-[12px] text-gray-400 mt-1">最后心跳包检测时间: <span
+                                        class="text-gray-700 font-mono">{{ new Date().toLocaleTimeString() }}</span></p>
+                            </div>
+                            <button
+                                class="px-5 py-2 border border-gray-300 rounded text-[13px] font-medium text-gray-600 hover:bg-gray-50 transition-colors">手动巡检</button>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-x-12 gap-y-10">
+                            <!-- 面板 A：API 注册服务接口 -->
+                            <div class="flex flex-col gap-3">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-[14px] font-bold text-gray-800">注册服务核心</span>
+                                    <span class="text-[12px] px-2 py-0.5 rounded opacity-90 border font-medium"
+                                        :class="engineRunning ? 'bg-[#F6FFED] text-[#52C41A] border-[#B7EB8F]' : 'bg-[#FFF2E8] text-[#FA541C] border-[#FFBB96]'">
+                                        {{ engineRunning ? '极佳' : '告警' }}
+                                    </span>
+                                </div>
+                                <div class="text-[12px] text-gray-500 flex items-center gap-4 font-mono">
+                                    <span>可用网段 <strong class="text-gray-900 font-sans">100%</strong></span>
+                                    <span>上行总求 <strong class="text-gray-900 font-sans">{{ formCount }}</strong></span>
+                                    <span>反馈吞吐 <strong class="text-gray-900 font-sans">{{ stats.totalGenerated
+                                            }}</strong></span>
+                                </div>
+                                <div class="flex items-stretch gap-1 w-full h-[18px]">
+                                    <div v-for="n in 24" :key="`grok-${n}`" class="flex-1 rounded-sm"
+                                        :class="engineRunning ? 'bg-[#52C41A]' : 'bg-[#FA541C]'">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 面板 B：邮箱解析服务接管 -->
+                            <div class="flex flex-col gap-3">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-[14px] font-bold text-gray-800">邮件接收通道</span>
+                                    <span
+                                        class="text-[12px] px-2 py-0.5 rounded bg-[#F6FFED] text-[#52C41A] border border-[#B7EB8F] font-medium opacity-90">优异</span>
+                                </div>
+                                <div class="text-[12px] text-gray-500 flex items-center gap-4 font-mono">
+                                    <span>接收延迟 <strong class="text-gray-900 font-sans">
+                                            < 50ms</strong></span>
+                                    <span>上行总求 <strong class="text-gray-900 font-sans">--</strong></span>
+                                    <span>反馈吞吐 <strong class="text-gray-900 font-sans">--</strong></span>
+                                </div>
+                                <div class="flex items-stretch gap-1 w-full h-[18px]">
+                                    <div v-for="n in 24" :key="`mail-${n}`" class="flex-1 bg-[#52C41A] rounded-sm">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 面板 C：IP 碰撞消耗池 -->
+                            <div class="flex flex-col gap-3">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-[14px] font-bold text-gray-800">代理池资源状态</span>
+                                    <span
+                                        class="text-[12px] px-2 py-0.5 rounded bg-gray-100 text-gray-500 border border-gray-200 font-medium">未托管此指标</span>
+                                </div>
+                                <div class="text-[12px] text-gray-500 flex items-center gap-4 font-mono">
+                                    <span>可用网段 <strong class="text-gray-900 font-sans">-</strong></span>
+                                    <span>上行总求 <strong class="text-gray-900 font-sans">0</strong></span>
+                                    <span>反馈吞吐 <strong class="text-gray-900 font-sans">0</strong></span>
+                                </div>
+                                <div class="flex items-stretch gap-1 w-full h-[18px]">
+                                    <div v-for="n in 24" :key="`ip-${n}`" class="flex-1 bg-gray-200 rounded-sm"></div>
+                                </div>
+                            </div>
+
+                            <!-- 面板 D：Turnstile Solver 实时状态 + Token 预热队列 -->
+                            <div class="flex flex-col gap-3 col-span-2">
+                                <div class="flex items-center justify-between">
+                                    <span class="text-[14px] font-bold text-gray-800">🔧 Solver 与 Token 队列</span>
+                                    <span class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border"
+                                        :class="solverStatus.summary.online_nodes > 0 ? 'bg-[#F6FFED] text-[#52C41A] border-[#B7EB8F]' : 'bg-[#FFF2E8] text-[#FA541C] border-[#FFBB96]'">
+                                        {{ solverStatus.summary.online_nodes > 0 ? `${solverStatus.summary.online_nodes}
+                                        节点在线` : '离线' }}
+                                    </span>
+                                </div>
+
+                                <!-- 四个指标卡片横排 -->
+                                <div class="grid grid-cols-4 gap-3">
+                                    <!-- 可用浏览器 -->
+                                    <div class="bg-[#F0F9FF] rounded-lg p-3 border border-blue-100">
+                                        <div class="text-[11px] text-blue-500 font-medium mb-1">可用浏览器</div>
+                                        <div class="text-[22px] font-bold text-blue-700 leading-none">
+                                            {{ solverStatus.summary.available_browsers }}<span
+                                                class="text-[13px] font-normal text-blue-400">/{{
+                                                solverStatus.summary.total_browsers }}</span>
+                                        </div>
+                                    </div>
+                                    <!-- Token 队列水位 -->
+                                    <div class="bg-[#F0FFF4] rounded-lg p-3 border border-green-100">
+                                        <div class="text-[11px] text-green-500 font-medium mb-1">Token 队列</div>
+                                        <div class="text-[22px] font-bold text-green-700 leading-none">
+                                            {{ solverStatus.token_queue.queue_size }}<span
+                                                class="text-[13px] font-normal text-green-400">/{{
+                                                solverStatus.token_queue.queue_capacity || '?' }}</span>
+                                        </div>
+                                    </div>
+                                    <!-- 解题成功率 -->
+                                    <div class="rounded-lg p-3 border"
+                                        :class="solverStatus.summary.success_rate >= 50 ? 'bg-[#F0FFF4] border-green-100' : 'bg-[#FFF7ED] border-orange-100'">
+                                        <div class="text-[11px] font-medium mb-1"
+                                            :class="solverStatus.summary.success_rate >= 50 ? 'text-green-500' : 'text-orange-500'">
+                                            成功率</div>
+                                        <div class="text-[22px] font-bold leading-none"
+                                            :class="solverStatus.summary.success_rate >= 50 ? 'text-green-700' : 'text-orange-700'">
+                                            {{ solverStatus.summary.success_rate }}<span class="text-[13px] font-normal"
+                                                :class="solverStatus.summary.success_rate >= 50 ? 'text-green-400' : 'text-orange-400'">%</span>
+                                        </div>
+                                    </div>
+                                    <!-- 解题计数 -->
+                                    <div class="bg-[#F5F3FF] rounded-lg p-3 border border-purple-100">
+                                        <div class="text-[11px] text-purple-500 font-medium mb-1">解题统计</div>
+                                        <div class="text-[14px] font-bold text-purple-700 leading-tight">
+                                            <span class="text-green-600">✓{{ solverStatus.summary.total_solved }}</span>
+                                            <span class="text-gray-300 mx-1">/</span>
+                                            <span class="text-red-500">✗{{ solverStatus.summary.total_failed }}</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- Token 队列水位条 -->
+                                <div class="flex items-center gap-2">
+                                    <span class="text-[11px] text-gray-400 font-medium w-[60px] shrink-0">队列水位</span>
+                                    <div class="flex-1 bg-gray-100 rounded-full h-[10px] overflow-hidden">
+                                        <div class="h-full rounded-full transition-all duration-200"
+                                            :class="solverStatus.token_queue.queue_size > 0 ? 'bg-gradient-to-r from-green-400 to-emerald-500' : 'bg-gray-300'"
+                                            :style="{ width: solverStatus.token_queue.queue_capacity > 0 ? Math.min(100, solverStatus.token_queue.queue_size / solverStatus.token_queue.queue_capacity * 100) + '%' : '0%' }">
+                                        </div>
+                                    </div>
+                                    <span class="text-[11px] text-gray-500 font-mono w-[40px] text-right">
+                                        {{ solverStatus.token_queue.queue_capacity > 0 ?
+                                        Math.round(solverStatus.token_queue.queue_size /
+                                        solverStatus.token_queue.queue_capacity * 100) : 0 }}%
+                                    </span>
+                                </div>
+
+                                <!-- 浏览器占用条 -->
+                                <div class="flex items-center gap-2">
+                                    <span class="text-[11px] text-gray-400 font-medium w-[60px] shrink-0">浏览器</span>
+                                    <div class="flex items-stretch gap-[2px] flex-1 h-[14px]">
+                                        <div v-for="(segmentActive, n) in solverBrowserSegments" :key="`br-${n}`"
+                                            class="flex-1 rounded-sm"
+                                            :class="segmentActive ? 'bg-[#52C41A]' : 'bg-[#FA541C]'">
+                                        </div>
+                                    </div>
+                                    <span class="text-[11px] text-gray-500 font-mono w-[40px] text-right">
+                                        {{ solverStatus.summary.available_browsers }}/{{
+                                        solverStatus.summary.total_browsers }}
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━ [ 视图三：运行日志截留池 (Logs) ] ━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+                <div v-else-if="currentTab === 'Logs'"
+                    class="view-page view-logs absolute inset-0 p-6 md:p-8 flex flex-col h-full overflow-hidden"
+                    key="logs">
+                    <header class="flex items-center justify-between mb-6 shrink-0">
+                        <div class="flex items-center gap-3">
+                            <div
+                                class="w-[32px] h-[32px] rounded-lg bg-gray-100 flex items-center justify-center shrink-0 border border-gray-200">
+                                <svg class="w-5 h-5 text-gray-700" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd"
+                                        d="M3 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm0 4a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z"
+                                        clip-rule="evenodd" />
+                                </svg>
+                            </div>
+                            <div>
+                                <h1 class="text-[20px] font-bold text-gray-900 tracking-tight">实时日志</h1>
+                                <p class="text-[13px] text-gray-500 mt-1">查看最新输出、异常事件与追尾状态</p>
+                            </div>
+                        </div>
+                        <div class="text-[12px] text-gray-400 font-medium">自动刷新：<span class="text-brand-blue">已开启</span>
+                        </div>
+                    </header>
+
+                    <div
+                        class="logs-shell flex-1 bg-white rounded-[16px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] flex flex-col min-h-0">
+
+                        <!-- 顶层的状态拦截分析器图表 -->
+                        <div class="flex justify-between items-center p-6 border-b border-gray-100 shrink-0">
+                            <!-- 几大块指标按钮 -->
+                            <div class="flex gap-4">
+                                <div
+                                    class="px-8 py-3 bg-[#FAFAFA] border border-gray-200 rounded-[12px] flex flex-col items-center">
+                                    <span class="text-[13px] text-gray-500 font-medium mb-1">总读取数</span>
+                                    <span class="text-[24px] font-bold text-gray-900 tracking-tight">{{ logs.length
+                                        }}</span>
+                                </div>
+                                <div
+                                    class="px-10 py-3 bg-[#FAFAFA] border border-gray-200 rounded-[12px] flex flex-col items-center">
+                                    <span class="text-[13px] text-gray-500 font-medium mb-1">INFO 日志</span>
+                                    <span class="text-[24px] font-bold text-[#1677FF] tracking-tight">--</span>
+                                </div>
+                                <div
+                                    class="px-10 py-3 bg-[#FAFAFA] border border-gray-200 rounded-[12px] flex flex-col items-center">
+                                    <span class="text-[13px] text-gray-500 font-medium mb-1">WARNING</span>
+                                    <span class="text-[24px] font-bold text-[#FAAD14] tracking-tight">--</span>
+                                </div>
+                                <div
+                                    class="px-10 py-3 bg-[#FAFAFA] border border-gray-200 rounded-[12px] flex flex-col items-center">
+                                    <span class="text-[13px] text-gray-500 font-medium mb-1">ERROR</span>
+                                    <span class="text-[24px] font-bold text-[#CF1322] tracking-tight">--</span>
+                                </div>
+                                <div
+                                    class="px-10 py-3 bg-[#FAFAFA] border border-gray-200 rounded-[12px] flex flex-col items-center">
+                                    <span class="text-[13px] text-gray-500 font-medium mb-1">内存驻留上限</span>
+                                    <span class="text-[24px] font-bold text-gray-900 tracking-tight">200</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 日志操作快捷栏 -->
+                        <div
+                            class="logs-toolbar px-6 py-3 border-b border-gray-100 flex items-center justify-between shrink-0 bg-[#FBFBFB]">
+                            <div class="flex items-center gap-3">
+                                <select
+                                    class="h-8 px-3 border border-gray-300 rounded-[6px] text-[13px] font-medium text-gray-600 bg-white focus:outline-none">
+                                    <option>全部日志流</option>
+                                    <option>仅抛出 ERROR</option>
+                                </select>
+                                <input type="text" placeholder="精确搜寻..."
+                                    class="h-8 px-3 border border-gray-300 rounded-[6px] text-[13px] bg-white w-[250px] focus:outline-none">
+                                <button
+                                    class="h-8 px-4 bg-white border border-gray-300 rounded-[6px] text-[13px] font-medium text-gray-700 hover:bg-gray-50">过滤查询</button>
+                                <button
+                                    class="h-8 px-4 bg-white border border-gray-300 rounded-[6px] text-[13px] font-medium text-gray-700 hover:bg-gray-50">一键导出</button>
+                            </div>
+                            <!-- 右边按钮 -->
+                            <div class="flex items-center gap-3">
+                                <button @click="logFilterMode = !logFilterMode"
+                                    class="h-8 px-4 rounded-[20px] text-[13px] font-medium transition-colors"
+                                    :class="logFilterMode ? 'bg-indigo-600 text-white hover:bg-indigo-700' : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'">
+                                    {{ logFilterMode ? '✓ 仅关键事件' : '转为结构化视图' }}
+                                </button>
+                                <button @click="autoTail = !autoTail"
+                                    class="h-8 px-5 rounded-[20px] text-[13px] font-medium shadow-sm transition-colors"
+                                    :class="autoTail ? 'bg-green-600 text-white hover:bg-green-700' : 'bg-gray-900 text-white hover:bg-black'">
+                                    {{ autoTail ? '✓ 追尾刷写中' : '启动自动追尾刷写' }}
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- 极致白板展示区 -->
+                        <div id="log-container"
+                            class="flex-1 px-3 py-1 overflow-y-auto custom-scroll font-mono text-[12px] text-gray-600 bg-[#FFFFFF]">
+                            <div v-if="displayLogs.length === 0"
+                                class="h-full flex flex-col items-center justify-center text-gray-400 gap-3">
+                                <svg class="w-12 h-12 opacity-20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1"
+                                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                                <span class="text-sm font-sans font-medium">暂无日志输出，可先启动任务或等待后端写入新日志。</span>
+                            </div>
+                            <div v-for="(log, idx) in displayLogs" :key="idx"
+                                class="break-all flex gap-1.5 hover:bg-[#F2F8FF] px-1 py-[1px] rounded-[2px] transition-colors group leading-[18px]">
+                                <span
+                                    class="text-gray-300 select-none w-[30px] flex-shrink-0 text-right text-[11px] tabular-nums">{{
+                                    idx + 1 }}</span>
+                                <span class="text-gray-200 shrink-0">│</span>
+                                <span :class="logColor(log)" class="flex-1">{{ log }}</span>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+
+                <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━ [ 视图四：账户池明细 (Accounts) ] ━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+                <div v-else-if="currentTab === 'Accounts'"
+                    class="view-page view-accounts absolute inset-0 p-6 md:p-8 flex flex-col h-full overflow-hidden"
+                    key="accounts">
+                    <header class="flex items-center justify-between mb-6 shrink-0">
+                        <div class="flex items-center gap-3">
+                            <div
+                                class="w-[32px] h-[32px] rounded-[8px] bg-blue-50 flex items-center justify-center shrink-0 border border-blue-100">
+                                <svg class="w-5 h-5 text-blue-500" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z"
+                                        clip-rule="evenodd" />
+                                </svg>
+                            </div>
+                            <div>
+                                <h1 class="text-[20px] font-bold text-gray-900 tracking-tight">账号列表</h1>
+                                <p class="text-[13px] text-gray-500 mt-1">查看最新生成账号与脱敏密码信息</p>
+                            </div>
+                        </div>
+                    </header>
+
+                    <div
+                        class="accounts-shell flex-1 bg-white rounded-[16px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] flex flex-col min-h-0 overflow-hidden">
+                        <div
+                            class="px-6 py-4 border-b border-gray-100 flex items-center justify-between shrink-0 bg-[#FAFAFA]">
+                            <h2 class="text-[14px] font-bold text-gray-700">最新账号产出</h2>
+                            <button @click="fetchAccounts"
+                                class="flex items-center gap-1.5 h-8 px-4 rounded border border-gray-300 bg-white hover:bg-gray-50 font-medium text-[12px] text-gray-600 transition-colors">
+                                <svg class="w-3.5 h-3.5" :class="{'animate-spin text-brand-blue': isFetching}"
+                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                </svg>
+                                人工重载数据
+                            </button>
+                        </div>
+
+                        <div class="flex-1 overflow-x-auto overflow-y-auto custom-scroll">
+                            <table class="w-full text-left text-[14px]">
+                                <thead
+                                    class="text-gray-500 text-[12px] font-medium border-b border-gray-100 sticky top-0 bg-white/95 backdrop-blur-md z-10">
+                                    <tr>
+                                        <th class="px-8 py-5 font-bold">源宿主邮箱 / Gork 平台挂载标识</th>
+                                        <th class="px-8 py-5 font-bold">哈希鉴权解密 (安全覆盖)</th>
+                                        <th class="px-8 py-5 font-bold w-40 text-right">资产分层状态</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-50 text-gray-700 text-[13px]">
+                                    <tr v-if="accounts.length === 0">
+                                        <td colspan="3" class="px-6 py-32 text-center bg-gray-50/30">
+                                            <div class="flex flex-col items-center gap-3 text-gray-400">
+                                                <svg class="w-12 h-12 opacity-20" fill="none" viewBox="0 0 24 24"
+                                                    stroke="currentColor">
+                                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                                        stroke-width="1.5"
+                                                        d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                                                </svg>
+                                                <span class="font-medium text-[14px]">当前还没有生成账号记录</span>
+                                                <span class="text-[12px]">请先回到概览页启动任务</span>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    <tr v-for="(item, i) in accounts" :key="i"
+                                        class="hover:bg-[#F6FAFF] transition-colors group cursor-pointer">
+                                        <td class="px-8 py-4 font-mono text-[13px] text-brand-blue font-medium">
+                                            {{ item.email }}
+                                        </td>
+                                        <td class="px-8 py-4 font-mono text-[13px] text-gray-500 password-cell">
+                                            <span
+                                                class="password-blur inline-block bg-gray-50 border border-gray-100 text-gray-600 font-bold px-3 py-1 rounded">{{
+                                                item.password || 'N/A' }}</span>
+                                        </td>
+                                        <td class="px-8 py-4 text-right">
+                                            <span
+                                                class="inline-flex items-center gap-1.5 px-3 py-1 rounded-sm text-[12px] font-bold bg-[#E6F4FF] text-[#1677FF] border border-[#91caff]">
+                                                可用白名单
+                                            </span>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ━━━━━━━━━━━━━━━━━━━ [ 视图五：节点监控 (ProxyPool) ] ━━━━━━━━━━━━━━━━━━━ -->
+                <div v-else-if="currentTab === 'ProxyPool'"
+                    class="view-page view-proxy absolute inset-0 p-6 md:p-8 overflow-y-auto custom-scroll flex flex-col gap-6"
+                    key="proxypool">
+                    <header class="flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            <div
+                                class="w-[32px] h-[32px] rounded-lg bg-cyan-50 flex items-center justify-center shrink-0 border border-cyan-100">
+                                <svg class="w-5 h-5 text-cyan-600" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd"
+                                        d="M4.083 9h1.946c.089-1.546.383-2.97.837-4.118A6.004 6.004 0 004.083 9zM10 2a8 8 0 100 16 8 8 0 000-16zm0 2c-.076 0-.232.032-.465.262-.238.234-.497.623-.737 1.182-.389.907-.706 2.142-.766 3.556h3.936c-.06-1.414-.377-2.649-.766-3.556-.24-.56-.5-.948-.737-1.182C10.232 4.032 10.076 4 10 4zm3.971 5c-.089-1.546-.383-2.97-.837-4.118A6.004 6.004 0 0115.917 9h-1.946zm-2.003 2H8.032c.06 1.414.377 2.649.766 3.556.24.56.5.948.737 1.182.233.23.389.262.465.262.076 0 .232-.032.465-.262.238-.234.497-.623.737-1.182.389-.907.706-2.142.766-3.556zm1.166 4.118c.454-1.147.748-2.572.837-4.118h1.946a6.004 6.004 0 01-2.783 4.118zm-6.268 0C6.412 13.97 6.118 12.546 6.03 11H4.083a6.004 6.004 0 002.783 4.118z"
+                                        clip-rule="evenodd" />
+                                </svg>
+                            </div>
+                            <div>
+                                <h1 class="text-[20px] font-bold text-gray-900 tracking-tight">代理池</h1>
+                                <p class="text-[13px] text-gray-500 mt-1">切换远端节点池模式或配置直连网关入口</p>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <button @click="proxyRefresh" :disabled="proxyRefreshing"
+                                class="h-8 px-4 rounded-[16px] bg-white border border-gray-200 text-[13px] font-medium text-gray-700 hover:text-cyan-600 hover:border-cyan-400 transition-colors shadow-soft disabled:opacity-50">
+                                {{ proxyRefreshing ? '刷新中...' : '刷新节点池' }}
+                            </button>
+                        </div>
+                    </header>
+
+                    <!-- 远端代理池 API 配置入口与全局控制开关 -->
+                    <div
+                        class="proxy-config-card bg-[#F8FAFC] border border-[#E2E8F0] rounded-[12px] p-4 flex flex-wrap items-center gap-3 shadow-sm">
+
+                        <!-- 左侧：开关控件 -->
+                        <div class="flex items-center gap-3 border-r border-gray-200 pr-5 mr-1">
+                            <span class="text-[13px] font-medium text-gray-700 whitespace-nowrap">云端池调度:</span>
+                            <button type="button" @click.prevent="toggleProxyPool"
+                                class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-cyan-600 focus:ring-offset-2"
+                                :class="enableProxyPool ? 'bg-cyan-600' : 'bg-gray-200'">
+                                <span class="sr-only">Toggle proxy pool</span>
+                                <span aria-hidden="true"
+                                    class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+                                    :class="enableProxyPool ? 'translate-x-5' : 'translate-x-0'">
+                                </span>
+                            </button>
+                            <span class="text-[12px] font-bold w-[140px]"
+                                :class="enableProxyPool ? 'text-cyan-600' : 'text-gray-400'">
+                                {{ enableProxyPool ? '已开启' : '已关闭 (强制本机直飞)' }}
+                            </span>
+                        </div>
+
+                        <!-- 中间：运行模式切换 -->
+                        <div class="flex items-center gap-2 border-r border-gray-200 pr-5 mr-1">
+                            <span class="text-[13px] font-medium text-gray-700 whitespace-nowrap">运行模式:</span>
+                            <select v-model="proxyMode" :disabled="!enableProxyPool"
+                                class="h-9 px-3 text-[13px] bg-white border border-gray-200 rounded-[8px] focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 transition-all font-medium disabled:opacity-50 disabled:bg-gray-50 cursor-pointer">
+                                <option value="api_pool">API 节点池拉取</option>
+                                <option value="direct_socks">SOCKS5/HTTP 直连网关</option>
+                            </select>
+                        </div>
+
+                        <!-- 右侧：地址配置 -->
+                        <div class="flex items-center gap-4 flex-1">
+                            <span class="text-[13px] font-medium text-gray-700 whitespace-nowrap">{{ proxyMode ===
+                                'direct_socks' ? '网关地址:' : '节点接口 API:' }}</span>
+                            <div class="relative flex-1 max-w-lg">
+                                <input type="text" v-model="activeProxyUrl" @keyup.enter="saveProxyApi"
+                                    :disabled="!enableProxyPool"
+                                    :placeholder="proxyMode === 'direct_socks' ? '例如: socks5://sjc1.clusters.zeabur.com:27168' : '例如: https://你的VPS_IP:8080'"
+                                    class="w-full h-9 pl-3 pr-4 text-[13px] bg-white border border-gray-200 rounded-[8px] focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 transition-all font-mono disabled:opacity-50 disabled:bg-gray-50" />
+                            </div>
+                        </div>
+                        <button @click="saveProxyApi" :disabled="savingApi"
+                            class="ml-2 h-9 px-5 bg-cyan-600 hover:bg-cyan-700 text-white text-[13px] font-medium rounded-[8px] transition-colors disabled:opacity-50">
+                            {{ savingApi ? '保存中' : '保存配置' }}
+                        </button>
+                    </div>
+
+                    <!-- 顶部摘要卡片 -->
+                    <div class="metrics-grid proxy-metrics grid grid-cols-1 md:grid-cols-3 gap-5">
+                        <!-- 可用节点总数 -->
+                        <div
+                            class="bg-white rounded-[16px] p-5 border border-gray-100 shadow-[0_2px_12px_rgba(0,0,0,0.03)]">
+                            <div class="flex justify-between items-center mb-4">
+                                <span class="text-[13px] font-medium text-gray-500">存活节点</span>
+                                <div class="w-[30px] h-[30px] rounded-full bg-cyan-50 flex items-center justify-center">
+                                    <svg class="w-4 h-4 text-cyan-600" fill="none" viewBox="0 0 24 24"
+                                        stroke="currentColor" stroke-width="2">
+                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                            d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+                                    </svg>
+                                </div>
+                            </div>
+                            <div class="text-[36px] font-bold text-gray-900 leading-none mb-2">{{ proxyPool.total }}
+                            </div>
+                            <div class="text-[12px] text-gray-400">经 Google 连通性验证的可用 SOCKS5 节点</div>
+                        </div>
+
+                        <!-- 当前活跃代理 -->
+                        <div
+                            class="bg-white rounded-[16px] p-5 border border-gray-100 shadow-[0_2px_12px_rgba(0,0,0,0.03)]">
+                            <div class="flex justify-between items-center mb-4">
+                                <span class="text-[13px] font-medium text-gray-500">当前活跃节点</span>
+                                <div
+                                    class="w-[30px] h-[30px] rounded-full bg-green-50 flex items-center justify-center">
+                                    <svg class="w-4 h-4 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                                        <path fill-rule="evenodd"
+                                            d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z"
+                                            clip-rule="evenodd" />
+                                    </svg>
+                                </div>
+                            </div>
+                            <div class="text-[18px] font-bold text-green-600 leading-tight mb-1 font-mono">{{
+                                proxyPool.active_proxy || 'N/A' }}</div>
+                            <div class="text-[12px] text-gray-400">{{ proxyPool.active_region || '未知区域' }}</div>
+                        </div>
+
+                        <!-- 刷新时间 -->
+                        <div
+                            class="bg-white rounded-[16px] p-5 border border-gray-100 shadow-[0_2px_12px_rgba(0,0,0,0.03)]">
+                            <div class="flex justify-between items-center mb-4">
+                                <span class="text-[13px] font-medium text-gray-500">刷新计划</span>
+                                <div
+                                    class="w-[30px] h-[30px] rounded-full bg-indigo-50 flex items-center justify-center">
+                                    <svg class="w-4 h-4 text-indigo-500" fill="none" viewBox="0 0 24 24"
+                                        stroke="currentColor" stroke-width="2">
+                                        <path stroke-linecap="round" stroke-linejoin="round"
+                                            d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                </div>
+                            </div>
+                            <div class="text-[13px] text-gray-700 font-mono mb-1">上次: <span class="font-medium">{{
+                                    proxyPool.last_scrape || 'N/A' }}</span></div>
+                            <div class="text-[13px] text-gray-700 font-mono">下次: <span class="font-medium">{{
+                                    proxyPool.next_scrape || 'N/A' }}</span></div>
+                        </div>
+                    </div>
+
+                    <!-- 节点列表表格（仅 API 节点池模式展示） -->
+                    <div v-if="proxyMode === 'direct_socks'"
+                        class="proxy-direct-card bg-white rounded-[16px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] flex flex-col flex-1 min-h-[400px] overflow-hidden">
+                        <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-[#FAFAFA]">
+                            <h2 class="text-[14px] font-bold text-gray-700">SOCKS5/HTTP 直连网关</h2>
+                            <span class="text-[12px] font-medium"
+                                :class="enableProxyPool ? 'text-green-600' : 'text-gray-400'">{{ enableProxyPool ?
+                                '已激活接管' : '未启用' }}</span>
+                        </div>
+                        <div class="flex-1 flex flex-col items-center justify-center px-8">
+                            <div class="w-20 h-20 rounded-full flex items-center justify-center mb-6"
+                                :class="enableProxyPool ? 'bg-cyan-50 border-2 border-cyan-200' : 'bg-gray-50 border-2 border-gray-200'">
+                                <svg class="w-10 h-10" :class="enableProxyPool ? 'text-cyan-500' : 'text-gray-300'"
+                                    fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                        d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                            </div>
+                            <h3 class="text-[18px] font-bold mb-2"
+                                :class="enableProxyPool ? 'text-gray-900' : 'text-gray-400'">直连网关已就绪</h3>
+                            <p class="text-[13px] text-gray-500 text-center max-w-md mb-4">
+                                网关内部自动维护代理池并执行并发 IP 轮换，每个注册线程的请求将分配到不同的出口 IP。该模式只接收一个标准 SOCKS5 / HTTP 入口，不会展开机场订阅中的节点列表。
+                            </p>
+                            <div v-if="directSocksUrl && enableProxyPool"
+                                class="bg-[#F0FDFA] border border-cyan-200 rounded-[10px] px-5 py-3 text-center">
+                                <div class="text-[12px] text-cyan-600 font-medium mb-1">当前网关入口</div>
+                                <div class="text-[15px] font-mono font-bold text-cyan-700">{{ directSocksUrl }}</div>
+                            </div>
+                            <div
+                                class="mt-4 max-w-2xl rounded-[12px] border border-violet-200 bg-violet-50 px-5 py-4 text-left">
+                                <div class="text-[13px] font-semibold text-violet-700 mb-1">机场订阅使用说明</div>
+                                <div class="text-[12px] leading-6 text-violet-700/90">
+                                    如果你手里是机场订阅链接，而不是单个 socks5/http 网关，请前往上方的 <strong>Sing-box</strong> 页面导入订阅。系统会先解析订阅中的
+                                    vmess / vless / ss / trojan / hysteria2 节点，再生成本地混合代理入口供注册机使用。
+                                </div>
+                            </div>
+                            <div v-if="!directSocksUrl || !enableProxyPool"
+                                class="mt-4 text-[13px] text-gray-400 italic">请在上方输入网关地址并开启云端池调度</div>
+                        </div>
+                    </div>
+                    <div v-else
+                        class="proxy-table-card bg-white rounded-[16px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] flex flex-col flex-1 min-h-[400px] overflow-hidden">
+                        <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between bg-[#FAFAFA]">
+                            <h2 class="text-[14px] font-bold text-gray-700">SOCKS5 全球分布节点池</h2>
+                            <span class="text-[12px] text-gray-400 font-medium">自动轮换 · 故障转移 · 已过滤 CN/HK</span>
+                        </div>
+                        <div class="flex-1 overflow-y-auto custom-scroll">
+                            <table class="w-full text-left text-[14px]">
+                                <thead
+                                    class="text-gray-500 text-[12px] font-medium border-b border-gray-100 sticky top-0 bg-white/95 backdrop-blur-md z-10">
+                                    <tr>
+                                        <th class="px-6 py-4 font-bold w-12">#</th>
+                                        <th class="px-6 py-4 font-bold">节点地址</th>
+                                        <th class="px-6 py-4 font-bold">国家/地区</th>
+                                        <th class="px-6 py-4 font-bold">城市</th>
+                                        <th class="px-6 py-4 font-bold w-32 text-right">状态</th>
+                                    </tr>
+                                </thead>
+                                <tbody class="divide-y divide-gray-50 text-gray-700 text-[13px]">
+                                    <tr v-if="!proxyPool.proxies || proxyPool.proxies.length === 0">
+                                        <td colspan="5" class="px-6 py-20 text-center">
+                                            <div class="flex flex-col items-center gap-3 text-gray-400">
+                                                <svg class="w-12 h-12 opacity-20" fill="none" viewBox="0 0 24 24"
+                                                    stroke="currentColor">
+                                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                                        stroke-width="1.5"
+                                                        d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+                                                </svg>
+                                                <span class="font-medium text-[14px]">代理池正在初始化抓取，请稍候...</span>
+                                                <span class="text-[12px]">首次启动需要约 30 秒完成全球节点扫描与验证</span>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    <tr v-for="(node, idx) in proxyPool.proxies" :key="idx"
+                                        class="hover:bg-[#F0FDFA] transition-colors cursor-pointer group"
+                                        :class="node.active ? 'bg-green-50/50' : ''" @click="proxySwitch(idx)">
+                                        <td class="px-6 py-3.5 text-gray-400 font-mono text-[12px]">{{ idx }}</td>
+                                        <td class="px-6 py-3.5 font-mono text-[13px]"
+                                            :class="node.active ? 'text-green-700 font-bold' : 'text-gray-700'">{{
+                                            node.addr }}</td>
+                                        <td class="px-6 py-3.5 text-gray-600">{{ node.country || '未知' }}</td>
+                                        <td class="px-6 py-3.5 text-gray-500">{{ node.city || '-' }}</td>
+                                        <td class="px-6 py-3.5 text-right">
+                                            <span v-if="node.active"
+                                                class="inline-flex items-center gap-1.5 px-3 py-1 rounded-sm text-[11px] font-bold bg-green-100 text-green-700 border border-green-200">
+                                                <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+                                                使用中
+                                            </span>
+                                            <span v-else
+                                                class="text-[11px] font-medium text-gray-400 group-hover:text-cyan-600 transition-colors">点击切换</span>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ━━━━━━━━━━━━━━━━━━━ [ 视图六：sing-box 代理池 ] ━━━━━━━━━━━━━━━━━━━ -->
+                <div v-else-if="currentTab === 'SingBox'"
+                    class="view-page view-singbox absolute inset-0 p-6 md:p-8 overflow-y-auto custom-scroll flex flex-col gap-6"
+                    key="singbox">
+                    <header class="flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            <div
+                                class="w-[32px] h-[32px] rounded-lg bg-violet-50 flex items-center justify-center shrink-0 border border-violet-100">
+                                <svg class="w-5 h-5 text-violet-600" fill="currentColor" viewBox="0 0 20 20">
+                                    <path
+                                        d="M2 5a2 2 0 012-2h12a2 2 0 012 2v2a2 2 0 01-2 2H4a2 2 0 01-2-2V5zm0 8a2 2 0 012-2h12a2 2 0 012 2v2a2 2 0 01-2 2H4a2 2 0 01-2-2v-2z" />
+                                </svg>
+                            </div>
+                            <div>
+                                <h1 class="text-[20px] font-bold text-gray-900 tracking-tight">Sing-box 网关</h1>
+                                <p class="text-[12px] text-gray-400 mt-0.5">订阅解析、节点筛选与本地混合代理入口统一管理</p>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <span class="px-3 py-1 rounded-full text-[12px] font-bold"
+                                :class="singbox.running ? 'bg-green-100 text-green-700 border border-green-200' : 'bg-gray-100 text-gray-500 border border-gray-200'">
+                                {{ singbox.running ? '运行中' : '已停止' }}
+                            </span>
+                        </div>
+                    </header>
+
+                    <!-- sing-box 二进制状态 -->
+                    <div v-if="!singbox.bin_exists"
+                        class="singbox-note bg-amber-50 border border-amber-200 rounded-[12px] p-5 flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            <svg class="w-5 h-5 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
+                                <path fill-rule="evenodd"
+                                    d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z"
+                                    clip-rule="evenodd" />
+                            </svg>
+                            <div>
+                                <div class="text-[14px] font-semibold text-amber-800">sing-box 未安装</div>
+                                <div class="text-[12px] text-amber-600 mt-0.5">点击右侧按钮自动下载 sing-box 可执行文件</div>
+                            </div>
+                        </div>
+                        <button @click="sbDownload" :disabled="sbDownloading"
+                            class="h-9 px-5 rounded-[8px] bg-amber-500 hover:bg-amber-600 text-white text-[13px] font-medium transition-colors disabled:opacity-50">
+                            {{ sbDownloading ? '下载中...' : '一键安装' }}
+                        </button>
+                    </div>
+
+                    <!-- 配置表单 -->
+                    <div
+                        class="singbox-block bg-white rounded-[16px] p-6 border border-gray-100 shadow-[0_2px_12px_rgba(0,0,0,0.03)]">
+                        <h2 class="text-[16px] font-bold text-gray-900 mb-5 flex items-center gap-2">
+                            ⚙️ 订阅配置
+                        </h2>
+
+                        <div class="flex flex-col gap-5">
+                            <!-- 订阅链接 -->
+                            <div>
+                                <label class="text-[13px] font-medium text-gray-600 mb-2 block">机场 / sublinkPro
+                                    订阅链接</label>
+                                <div class="flex gap-3">
+                                    <input type="text" v-model="sbSubscribeUrl"
+                                        placeholder="https://your-server.com/subscribe/xxx"
+                                        class="flex-1 h-10 px-4 border border-gray-200 rounded-[8px] text-[14px] bg-[#FAFAFA] focus:bg-white focus:border-violet-400 focus:outline-none transition-colors" />
+                                    <button @click="sbRefresh" :disabled="sbRefreshing || !sbSubscribeUrl"
+                                        class="h-10 px-5 rounded-[8px] bg-violet-600 hover:bg-violet-700 text-white text-[13px] font-medium transition-colors disabled:opacity-50 whitespace-nowrap">
+                                        {{ sbRefreshing ? '拉取中...' : '刷新订阅' }}
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- 端口和开关 -->
+                            <div class="flex items-center gap-6">
+                                <div class="flex items-center gap-3">
+                                    <label class="text-[13px] font-medium text-gray-600">本地端口:</label>
+                                    <input type="number" v-model.number="sbListenPort" min="1024" max="65535"
+                                        class="w-24 h-9 px-3 border border-gray-200 rounded-[8px] text-[14px] font-mono bg-[#FAFAFA] focus:bg-white focus:border-violet-400 focus:outline-none transition-colors" />
+                                </div>
+                                <div class="flex items-center gap-3 ml-auto">
+                                    <span class="text-[13px] font-medium"
+                                        :class="sbEnabled ? 'text-violet-600' : 'text-gray-400'">{{ sbEnabled ? '已启用' :
+                                        '未启用' }}</span>
+                                    <button type="button" @click="sbToggleEnabled"
+                                        class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out"
+                                        :class="sbEnabled ? 'bg-violet-600' : 'bg-gray-200'">
+                                        <span aria-hidden="true"
+                                            class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+                                            :class="sbEnabled ? 'translate-x-5' : 'translate-x-0'"></span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- 保存按钮 -->
+                            <div class="flex items-center gap-3">
+                                <button @click="sbSaveConfig" :disabled="sbSaving"
+                                    class="h-9 px-5 rounded-[8px] bg-[#0F172A] hover:bg-black text-white text-[13px] font-medium transition-colors disabled:opacity-50">
+                                    {{ sbSaving ? '保存中...' : '保存配置' }}
+                                </button>
+                                <span v-if="sbMessage" class="text-[13px]"
+                                    :class="sbMessageOk ? 'text-green-600' : 'text-red-500'">{{ sbMessage }}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 诊断信息 -->
+                    <div
+                        class="singbox-block bg-white rounded-[16px] p-6 border border-gray-100 shadow-[0_2px_12px_rgba(0,0,0,0.03)]">
+                        <h2 class="text-[16px] font-bold text-gray-900 mb-5 flex items-center gap-2">
+                            🩺 运行诊断
+                        </h2>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                            <div class="bg-[#FAFAFA] rounded-[12px] p-4 border border-gray-100">
+                                <div class="text-[12px] text-gray-500 mb-1">配置文件</div>
+                                <div class="text-[14px] font-mono font-bold"
+                                    :class="singbox.config_exists ? 'text-green-600' : 'text-red-500'">
+                                    {{ singbox.config_exists ? '已生成' : '未生成' }}
+                                </div>
+                                <div class="text-[12px] text-gray-400 mt-1 break-all">{{ singbox.config_path || 'N/A' }}
+                                </div>
+                            </div>
+                            <div class="bg-[#FAFAFA] rounded-[12px] p-4 border border-gray-100">
+                                <div class="text-[12px] text-gray-500 mb-1">最近状态</div>
+                                <div class="text-[13px]" :class="sbMessageOk ? 'text-green-600' : 'text-red-500'">
+                                    {{ singbox.last_message || sbMessage || '暂无状态信息' }}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div class="bg-[#0F172A] rounded-[12px] p-4 text-white overflow-hidden">
+                                <div class="text-[12px] text-slate-300 mb-2">stderr 日志尾部</div>
+                                <pre
+                                    class="text-[11px] leading-5 whitespace-pre-wrap break-all max-h-56 overflow-y-auto custom-scroll">{{ singbox.stderr_log_tail || '暂无 stderr 日志' }}</pre>
+                            </div>
+                            <div class="bg-[#111827] rounded-[12px] p-4 text-white overflow-hidden">
+                                <div class="text-[12px] text-slate-300 mb-2">stdout 日志尾部</div>
+                                <pre
+                                    class="text-[11px] leading-5 whitespace-pre-wrap break-all max-h-56 overflow-y-auto custom-scroll">{{ singbox.stdout_log_tail || '暂无 stdout 日志' }}</pre>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 状态和控制面板 -->
+                    <div
+                        class="singbox-block bg-white rounded-[16px] p-6 border border-gray-100 shadow-[0_2px_12px_rgba(0,0,0,0.03)]">
+                        <h2 class="text-[16px] font-bold text-gray-900 mb-5 flex items-center gap-2">
+                            🎛️ 进程控制
+                        </h2>
+
+                        <!-- 状态指标卡片 -->
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                            <div class="bg-[#FAFAFA] rounded-[12px] p-4 border border-gray-100">
+                                <div class="text-[12px] text-gray-500 mb-1">运行状态</div>
+                                <div class="text-[20px] font-bold"
+                                    :class="singbox.running ? 'text-green-600' : 'text-gray-400'">
+                                    {{ singbox.running ? '● 运行中' : '○ 已停止' }}
+                                </div>
+                            </div>
+                            <div class="bg-[#FAFAFA] rounded-[12px] p-4 border border-gray-100">
+                                <div class="text-[12px] text-gray-500 mb-1">订阅 URI 总数</div>
+                                <div class="text-[20px] font-bold text-slate-700">{{ singbox.total_uris || 0 }}</div>
+                            </div>
+                            <div class="bg-[#FAFAFA] rounded-[12px] p-4 border border-gray-100">
+                                <div class="text-[12px] text-gray-500 mb-1">解析成功数</div>
+                                <div class="text-[20px] font-bold text-slate-700">{{ singbox.parsed_count || 0 }}</div>
+                            </div>
+                            <div class="bg-[#FAFAFA] rounded-[12px] p-4 border border-gray-100">
+                                <div class="text-[12px] text-gray-500 mb-1">解析失败数</div>
+                                <div class="text-[20px] font-bold text-rose-600">{{ singbox.parse_failed_count || 0 }}
+                                </div>
+                            </div>
+                            <div class="bg-[#FAFAFA] rounded-[12px] p-4 border border-gray-100">
+                                <div class="text-[12px] text-gray-500 mb-1">TCP 快速探测通过</div>
+                                <div class="text-[20px] font-bold text-violet-600">{{ singbox.available_count ||
+                                    singbox.node_count || 0 }}</div>
+                            </div>
+                            <div class="bg-[#FAFAFA] rounded-[12px] p-4 border border-gray-100">
+                                <div class="text-[12px] text-gray-500 mb-1">TCP 探测失败数</div>
+                                <div class="text-[20px] font-bold text-amber-600">{{ singbox.quick_probe_failed_count ||
+                                    0 }}</div>
+                            </div>
+                            <div class="bg-[#FAFAFA] rounded-[12px] p-4 border border-gray-100">
+                                <div class="text-[12px] text-gray-500 mb-1">地区策略排除数</div>
+                                <div class="text-[20px] font-bold text-sky-600">{{ singbox.region_excluded_count || 0 }}
+                                </div>
+                            </div>
+                            <div class="bg-[#FAFAFA] rounded-[12px] p-4 border border-gray-100">
+                                <div class="text-[12px] text-gray-500 mb-1">手动禁用数</div>
+                                <div class="text-[20px] font-bold text-rose-600">{{ singbox.manual_disabled_count || 0
+                                    }}
+                                </div>
+                            </div>
+                            <div class="bg-[#FAFAFA] rounded-[12px] p-4 border border-gray-100">
+                                <div class="text-[12px] text-gray-500 mb-1">代理入口</div>
+                                <div class="text-[14px] font-mono font-bold text-gray-700 mt-1">
+                                    socks5://127.0.0.1:{{ singbox.listen_port || 2080 }}</div>
+                            </div>
+                            <div class="bg-[#FAFAFA] rounded-[12px] p-4 border border-gray-100">
+                                <div class="text-[12px] text-gray-500 mb-1">目标站点验活</div>
+                                <div class="text-[16px] font-bold"
+                                    :class="singbox.xai_probe_enabled ? 'text-emerald-600' : 'text-amber-600'">
+                                    {{ singbox.xai_probe_enabled ? '已启用 x.ai 实测' : '未启用 x.ai 实测' }}
+                                </div>
+                                <div class="text-[11px] text-gray-500 mt-1 truncate">{{ singbox.target_url ||
+                                    'https://accounts.x.ai/sign-up?redirect=grok-com' }}</div>
+                            </div>
+                        </div>
+
+                        <div class="mb-6 rounded-[12px] border border-amber-200 bg-amber-50 px-4 py-4">
+                            <div class="flex items-start gap-3">
+                                <div class="text-[20px] leading-none">⚠️</div>
+                                <div class="min-w-0">
+                                    <div class="text-[13px] font-bold text-amber-800">当前 sing-box 可用性口径</div>
+                                    <div class="text-[12px] text-amber-900/90 mt-1">
+                                        {{ singbox.availability_basis_label || '仅 TCP 快速探测' }} · {{
+                                        singbox.diagnostic_warning || '当前可用数仅代表 TCP 建连成功，不代表已经验证可访问 accounts.x.ai' }}
+                                    </div>
+                                    <div v-if="singbox.region_filter_enabled" class="text-[12px] text-sky-800 mt-2">
+                                        地区策略：{{ singbox.region_filter_label || '排除港/台/国内节点' }} · {{
+                                        singbox.region_filter_warning || '当前会按标签排除港/台/国内节点，避免继续混入可用池' }}
+                                    </div>
+                                    <div v-if="singbox.manual_disabled_count" class="text-[12px] text-rose-800 mt-2">
+                                        手动禁用：当前已锁定 {{ singbox.manual_disabled_count || 0 }}
+                                        个节点，被禁用节点会在后续刷新时持续排除，直到你手动恢复。
+                                    </div>
+                                    <div class="text-[11px] text-amber-800/80 mt-2 break-all">
+                                        最近刷新结果：{{ singbox.last_refresh_message || singbox.last_message || '暂无刷新结果' }}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-6">
+                            <div class="bg-[#FAFAFA] rounded-[12px] border border-gray-100 overflow-hidden">
+                                <div
+                                    class="px-4 py-3 border-b border-gray-100 flex items-center justify-between bg-white">
+                                    <div>
+                                        <div class="text-[13px] font-bold text-slate-800">解析成功节点</div>
+                                        <div class="text-[11px] text-gray-500">协议转换成功的节点，会进入后续 TCP 粗筛</div>
+                                    </div>
+                                    <div class="text-[12px] font-mono text-slate-600">{{ (singbox.parsed_nodes ||
+                                        []).length }}</div>
+                                </div>
+                                <div class="max-h-72 overflow-y-auto custom-scroll">
+                                    <div v-if="!(singbox.parsed_nodes || []).length"
+                                        class="px-4 py-8 text-center text-[12px] text-gray-400">暂无解析成功节点</div>
+                                    <div v-for="(node, idx) in (singbox.parsed_nodes || [])" :key="`parsed-${idx}`"
+                                        class="px-4 py-3 border-b border-gray-100 last:border-b-0">
+                                        <div class="flex items-center justify-between gap-3 mb-1">
+                                            <div class="text-[13px] font-semibold text-slate-800 break-all">{{ node.tag
+                                                || `node-${idx + 1}` }}</div>
+                                            <div class="flex items-center gap-2 shrink-0">
+                                                <span v-if="isSingboxNodeManualDisabled(node)"
+                                                    class="text-[11px] px-2 py-0.5 rounded bg-rose-100 text-rose-700 font-medium">已禁用</span>
+                                                <span
+                                                    class="text-[11px] px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-mono uppercase">{{
+                                                    node.type || 'unknown' }}</span>
+                                            </div>
+                                        </div>
+                                        <div class="text-[12px] text-gray-500 font-mono break-all">{{ node.server ||
+                                            'N/A' }}:{{ node.server_port || 'N/A' }}</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="bg-[#FAFAFA] rounded-[12px] border border-gray-100 overflow-hidden">
+                                <div
+                                    class="px-4 py-3 border-b border-gray-100 flex items-center justify-between bg-white">
+                                    <div>
+                                        <div class="text-[13px] font-bold text-violet-700">TCP 快速探测通过节点</div>
+                                        <div class="text-[11px] text-gray-500">当前被写入 sing-box 配置并参与 urltest 的节点</div>
+                                    </div>
+                                    <div class="text-[12px] font-mono text-violet-700">{{ (singbox.available_nodes ||
+                                        []).length }}</div>
+                                </div>
+                                <div class="max-h-72 overflow-y-auto custom-scroll">
+                                    <div v-if="!(singbox.available_nodes || []).length"
+                                        class="px-4 py-8 text-center text-[12px] text-gray-400">暂无 TCP 探测通过节点</div>
+                                    <div v-for="(node, idx) in (singbox.available_nodes || [])"
+                                        :key="`available-${idx}`"
+                                        class="px-4 py-3 border-b border-gray-100 last:border-b-0">
+                                        <div class="flex items-center justify-between gap-3 mb-1">
+                                            <div class="text-[13px] font-semibold text-violet-800 break-all">{{ node.tag
+                                                || `node-${idx + 1}` }}</div>
+                                            <div class="flex items-center gap-2 shrink-0">
+                                                <button type="button" @click="sbToggleNodeDisabled(node, true)"
+                                                    :disabled="sbNodeActioningKey === getSingboxNodeKey(node)"
+                                                    class="h-7 px-2.5 rounded border border-rose-200 bg-rose-50 text-rose-700 text-[11px] font-medium hover:bg-rose-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                                                    {{ sbNodeActioningKey === getSingboxNodeKey(node) ? '处理中...' :
+                                                    '手动禁用' }}
+                                                </button>
+                                                <span
+                                                    class="text-[11px] px-2 py-0.5 rounded bg-violet-100 text-violet-700 font-mono uppercase">{{
+                                                    node.type || 'unknown' }}</span>
+                                            </div>
+                                        </div>
+                                        <div class="text-[12px] text-gray-500 font-mono break-all">{{ node.server ||
+                                            'N/A' }}:{{ node.server_port || 'N/A' }}</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="bg-[#FFF7F7] rounded-[12px] border border-rose-100 overflow-hidden">
+                                <div
+                                    class="px-4 py-3 border-b border-rose-100 flex items-center justify-between bg-white">
+                                    <div>
+                                        <div class="text-[13px] font-bold text-rose-700">解析失败节点</div>
+                                        <div class="text-[11px] text-gray-500">协议不支持、参数缺失或转换报错的节点</div>
+                                    </div>
+                                    <div class="text-[12px] font-mono text-rose-700">{{ (singbox.parse_failed_nodes ||
+                                        []).length }}</div>
+                                </div>
+                                <div class="max-h-72 overflow-y-auto custom-scroll">
+                                    <div v-if="!(singbox.parse_failed_nodes || []).length"
+                                        class="px-4 py-8 text-center text-[12px] text-gray-400">暂无解析失败节点</div>
+                                    <div v-for="(node, idx) in (singbox.parse_failed_nodes || [])"
+                                        :key="`parse-failed-${idx}`"
+                                        class="px-4 py-3 border-b border-rose-100 last:border-b-0">
+                                        <div class="flex items-center justify-between gap-3 mb-1">
+                                            <div class="text-[13px] font-semibold text-rose-800 break-all">{{ node.tag
+                                                ||
+                                                `parse-failed-${idx + 1}` }}</div>
+                                            <span
+                                                class="text-[11px] px-2 py-0.5 rounded bg-rose-100 text-rose-700 font-mono uppercase">{{
+                                                node.type || 'unknown' }}</span>
+                                        </div>
+                                        <div class="text-[12px] text-rose-700 break-all">{{ node.reason || '解析失败' }}
+                                        </div>
+                                        <div v-if="node.uri_preview"
+                                            class="text-[11px] text-gray-500 font-mono break-all mt-1">{{
+                                            node.uri_preview }}</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="bg-[#FFFBEB] rounded-[12px] border border-amber-100 overflow-hidden">
+                                <div
+                                    class="px-4 py-3 border-b border-amber-100 flex items-center justify-between bg-white">
+                                    <div>
+                                        <div class="text-[13px] font-bold text-amber-700">TCP 探测失败节点</div>
+                                        <div class="text-[11px] text-gray-500">协议已解析，但入口端口无法快速建立连接</div>
+                                    </div>
+                                    <div class="text-[12px] font-mono text-amber-700">{{
+                                        (singbox.quick_probe_failed_nodes ||
+                                        []).length }}</div>
+                                </div>
+                                <div class="max-h-72 overflow-y-auto custom-scroll">
+                                    <div v-if="!(singbox.quick_probe_failed_nodes || []).length"
+                                        class="px-4 py-8 text-center text-[12px] text-gray-400">暂无 TCP 探测失败节点</div>
+                                    <div v-for="(node, idx) in (singbox.quick_probe_failed_nodes || [])"
+                                        :key="`probe-failed-${idx}`"
+                                        class="px-4 py-3 border-b border-amber-100 last:border-b-0">
+                                        <div class="flex items-center justify-between gap-3 mb-1">
+                                            <div class="text-[13px] font-semibold text-amber-800 break-all">{{ node.tag
+                                                ||
+                                                `probe-failed-${idx + 1}` }}</div>
+                                            <span
+                                                class="text-[11px] px-2 py-0.5 rounded bg-amber-100 text-amber-700 font-mono uppercase">{{
+                                                node.type || 'unknown' }}</span>
+                                        </div>
+                                        <div class="text-[12px] text-amber-700 break-all">{{ node.reason || 'TCP 快速探测失败'
+                                            }}</div>
+                                        <div class="text-[11px] text-gray-500 font-mono break-all mt-1">{{ node.server
+                                            ||
+                                            'N/A' }}:{{ node.server_port || 'N/A' }}</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="bg-[#F0F9FF] rounded-[12px] border border-sky-100 overflow-hidden">
+                                <div
+                                    class="px-4 py-3 border-b border-sky-100 flex items-center justify-between bg-white">
+                                    <div>
+                                        <div class="text-[13px] font-bold text-sky-700">地区策略排除节点</div>
+                                        <div class="text-[11px] text-gray-500">按节点标签排除港/台/国内线路，避免继续进入可用池</div>
+                                    </div>
+                                    <div class="text-[12px] font-mono text-sky-700">{{ (singbox.region_excluded_nodes ||
+                                        []).length }}</div>
+                                </div>
+                                <div class="max-h-72 overflow-y-auto custom-scroll">
+                                    <div v-if="!(singbox.region_excluded_nodes || []).length"
+                                        class="px-4 py-8 text-center text-[12px] text-gray-400">暂无地区策略排除节点</div>
+                                    <div v-for="(node, idx) in (singbox.region_excluded_nodes || [])"
+                                        :key="`region-excluded-${idx}`"
+                                        class="px-4 py-3 border-b border-sky-100 last:border-b-0">
+                                        <div class="flex items-center justify-between gap-3 mb-1">
+                                            <div class="text-[13px] font-semibold text-sky-800 break-all">{{ node.tag ||
+                                                `region-excluded-${idx + 1}` }}</div>
+                                            <span
+                                                class="text-[11px] px-2 py-0.5 rounded bg-sky-100 text-sky-700 font-mono uppercase">{{
+                                                node.type || 'unknown' }}</span>
+                                        </div>
+                                        <div class="text-[12px] text-sky-700 break-all">{{ node.reason || '地区策略已排除' }}
+                                        </div>
+                                        <div class="text-[11px] text-gray-500 font-mono break-all mt-1">{{ node.server
+                                            ||
+                                            'N/A' }}:{{ node.server_port || 'N/A' }}</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="bg-[#FFF7FB] rounded-[12px] border border-fuchsia-100 overflow-hidden">
+                                <div
+                                    class="px-4 py-3 border-b border-fuchsia-100 flex items-center justify-between bg-white">
+                                    <div>
+                                        <div class="text-[13px] font-bold text-fuchsia-700">手动禁用节点</div>
+                                        <div class="text-[11px] text-gray-500">你主动拉黑的节点，会在后续刷新时持续排除</div>
+                                    </div>
+                                    <div class="text-[12px] font-mono text-fuchsia-700">{{
+                                        (singbox.manual_disabled_nodes ||
+                                        []).length }}</div>
+                                </div>
+                                <div class="max-h-72 overflow-y-auto custom-scroll">
+                                    <div v-if="!(singbox.manual_disabled_nodes || []).length"
+                                        class="px-4 py-8 text-center text-[12px] text-gray-400">暂无手动禁用节点</div>
+                                    <div v-for="(node, idx) in (singbox.manual_disabled_nodes || [])"
+                                        :key="`manual-disabled-${idx}`"
+                                        class="px-4 py-3 border-b border-fuchsia-100 last:border-b-0">
+                                        <div class="flex items-center justify-between gap-3 mb-1">
+                                            <div class="text-[13px] font-semibold text-fuchsia-800 break-all">{{
+                                                node.tag ||
+                                                `manual-disabled-${idx + 1}` }}</div>
+                                            <div class="flex items-center gap-2 shrink-0">
+                                                <button type="button" @click="sbToggleNodeDisabled(node, false)"
+                                                    :disabled="sbNodeActioningKey === getSingboxNodeKey(node)"
+                                                    class="h-7 px-2.5 rounded border border-emerald-200 bg-emerald-50 text-emerald-700 text-[11px] font-medium hover:bg-emerald-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+                                                    {{ sbNodeActioningKey === getSingboxNodeKey(node) ? '处理中...' :
+                                                    '恢复节点' }}
+                                                </button>
+                                                <span
+                                                    class="text-[11px] px-2 py-0.5 rounded bg-fuchsia-100 text-fuchsia-700 font-mono uppercase">{{
+                                                    node.type || 'unknown' }}</span>
+                                            </div>
+                                        </div>
+                                        <div class="text-[12px] text-fuchsia-700 break-all">{{ node.reason || '已手动禁用' }}
+                                        </div>
+                                        <div class="text-[11px] text-gray-500 font-mono break-all mt-1">{{ node.server
+                                            ||
+                                            'N/A' }}:{{ node.server_port || 'N/A' }}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 控制按钮 -->
+                        <div class="flex items-center gap-3">
+                            <button v-if="!singbox.running" @click="sbStart" :disabled="sbStarting"
+                                class="h-10 px-6 rounded-[8px] bg-green-600 hover:bg-green-700 text-white text-[14px] font-medium transition-colors disabled:opacity-50 flex items-center gap-2">
+                                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                    stroke-width="2.5">
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                        d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                                </svg>
+                                {{ sbStarting ? '启动中...' : '启动 sing-box' }}
+                            </button>
+                            <button v-else @click="sbStop" :disabled="sbStopping"
+                                class="h-10 px-6 rounded-[8px] bg-red-500 hover:bg-red-600 text-white text-[14px] font-medium transition-colors disabled:opacity-50 flex items-center gap-2">
+                                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"
+                                    stroke-width="2.5">
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                        d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round"
+                                        d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+                                </svg>
+                                {{ sbStopping ? '停止中...' : '停止 sing-box' }}
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- 使用说明 -->
+                    <div class="singbox-note bg-[#F8FAFC] rounded-[12px] p-5 border border-gray-200">
+                        <h3 class="text-[14px] font-bold text-gray-700 mb-3">📖 使用流程</h3>
+                        <ol class="text-[13px] text-gray-600 space-y-2 list-decimal list-inside">
+                            <li>粘贴机场订阅链接或 <strong>sublinkPro</strong> 生成的订阅链接到上方输入框</li>
+                            <li>点击 <strong>"刷新订阅"</strong>，解析 vmess / vless / ss / trojan / hysteria2 等节点并生成 sing-box 配置
+                            </li>
+                            <li>确认上方“运行诊断”中的配置文件状态、最近状态与日志尾部无异常</li>
+                            <li>打开 <strong>"已启用"</strong> 开关并保存配置</li>
+                            <li>点击 <strong>"启动 sing-box"</strong>，注册机将自动通过 sing-box 本地混合代理入口出站</li>
+                        </ol>
+                    </div>
+                </div>
+
+            </transition>
+        </main>
+    </div>
+
+    <script>
+        // 全局拦截 Fetch 以自动挂载凭证及捕获 401
+        const originalFetch = window.fetch;
+        window.fetch = async function () {
+            let [resource, config] = arguments;
+            if (typeof resource === 'string' && resource.startsWith('/api/') && resource !== '/api/login') {
+                config = config || {};
+                config.headers = config.headers || {};
+                const token = localStorage.getItem('admin_token');
+                if (token) {
+                    config.headers['Authorization'] = 'Bearer ' + token;
+                }
+            }
+            const response = await originalFetch(resource, config);
+            if (response.status === 401 && resource !== '/api/login') {
+                localStorage.removeItem('admin_token');
+                if (window.__triggerLoginGate) window.__triggerLoginGate();
+            }
+            return response;
+        };
+
+        const { createApp, ref, onMounted, onUnmounted, nextTick, computed, watch } = Vue
+
+        createApp({
+            setup() {
+                // ====== 访问权限认证拦截状态 ======
+                const isAuthenticated = ref(!!localStorage.getItem('admin_token'));
+                const loginPassword = ref('');
+                const isLoggingIn = ref(false);
+                const loginError = ref('');
+
+                window.__triggerLoginGate = () => {
+                    isAuthenticated.value = false;
+                };
+
+                const doLogin = async () => {
+                    if (!loginPassword.value) return;
+                    isLoggingIn.value = true;
+                    loginError.value = '';
+                    try {
+                        const res = await originalFetch('/api/login', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ password: loginPassword.value })
+                        });
+                        const data = await res.json();
+                        if (res.ok && data.token) {
+                            localStorage.setItem('admin_token', data.token);
+                            isAuthenticated.value = true;
+                            loginPassword.value = '';
+                            // 登录成功后刷新所有板块的数据
+                            refreshCurrentTab();
+                        } else {
+                            loginError.value = data.detail || '密码验证失败';
+                        }
+                    } catch (e) {
+                        loginError.value = '请求未达后端，请检查网络';
+                    } finally {
+                        isLoggingIn.value = false;
+                    }
+                };
+
+                // ====== 核心路由状态 ======
+                const currentTab = ref('Overview') // 可选值：Overview, Monitor, Logs, Accounts, ProxyPool, SingBox
+
+                const stats = ref({ totalGenerated: 0, status: 'Idle', params: {} })
+                const accounts = ref([])
+                const logs = ref([])
+                const isFetching = ref(false)
+                const isLoading = ref(false)
+                const engineRunning = ref(false)
+
+                // 参数表单：挂载在概览启动台中
+                const formCount = ref(100)
+                const formConcurrency = ref(5)
+                const autoTail = ref(true)
+                const logFilterMode = ref(false)
+                const elapsed = ref(0)
+                const proxyPool = ref({ total: 0, proxies: [], active_proxy: 'N/A', active_region: '', last_scrape: '', next_scrape: '' })
+
+                // Solver & Token 池实时状态
+                const solverStatus = ref({
+                    summary: { total_nodes: 0, online_nodes: 0, available_browsers: 0, total_browsers: 0, total_solved: 0, total_failed: 0, success_rate: 0, total_memory_mb: 0 },
+                    token_queue: { queue_size: 0, queue_capacity: 0, last_event: '' },
+                    nodes: []
+                })
+                const proxyRefreshing = ref(false)
+
+                const formatTime = (s) => {
+                    const m = Math.floor(s / 60)
+                    const sec = s % 60
+                    return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
+                }
+
+                const displayLogs = computed(() => {
+                    if (!logFilterMode.value) return logs.value
+                    return logs.value.filter(log => {
+                        const t = log.toLowerCase()
+                        return t.includes('error') || t.includes('failed') || t.includes('失败') ||
+                            t.includes('success') || t.includes('成功') || t.includes('完成') ||
+                            t.includes('warning') || t.includes('警告') || t.includes('exception') ||
+                            t.includes('[控制台]') || t.includes('===') || t.includes('🎉')
+                    })
+                })
+
+                const solverBrowserSegments = computed(() => {
+                    const total = Math.max(Number(solverStatus.value.summary.total_browsers) || 0, 0)
+                    const available = Math.max(Number(solverStatus.value.summary.available_browsers) || 0, 0)
+                    const segmentCount = total > 0 ? Math.min(total, 24) : 1
+                    if (total <= 0) return [false]
+                    return Array.from({ length: segmentCount }, (_, index) => {
+                        const threshold = Math.ceil(((index + 1) / segmentCount) * total)
+                        return available >= threshold
+                    })
+                })
+
+                let statsTimer = null
+                let accountsTimer = null
+                let logTimer = null
+                let proxyTimer = null
+                let solverTimer = null
+                let singboxTimer = null
+                let elapsedTimer = null
+                let statsPending = false
+                let accountsPending = false
+                let logsPending = false
+                let solverPending = false
+                let proxyPending = false
+                let singboxPending = false
+
+                const isPageVisible = () => document.visibilityState === 'visible'
+
+                // White Theme Terminal Log Colors，更加严肃的错误颜色分配
+                const logColor = (text) => {
+                    const t = text.toLowerCase()
+                    if (t.includes('error') || t.includes('failed') || t.includes('失败') || t.includes('exception') || t.includes('❌'))
+                        return 'text-[#C62828] font-bold'
+                    if (t.includes('success') || t.includes('成功') || t.includes('done') || t.includes('完成') || t.includes('🎉') || t.includes('✅'))
+                        return 'text-[#2E7D32] font-medium'
+                    if (t.includes('warning') || t.includes('警告') || t.includes('⚠'))
+                        return 'text-[#E65100] font-medium'
+                    if (t.includes('[控制台]') || t.includes('==='))
+                        return 'text-[#1565C0] font-bold'
+                    if (t.includes('step') || t.includes('步骤'))
+                        return 'text-[#4527A0] font-medium'
+                    return 'text-gray-600'
+                }
+
+                // API Polling
+                const fetchStats = async () => {
+                    if (statsPending) return
+                    statsPending = true
+                    try {
+                        const res = await fetch('/api/stats')
+                        if (res.ok) {
+                            const d = await res.json()
+                            stats.value = d
+                            engineRunning.value = d.status === 'Running'
+                            elapsed.value = d.elapsed || 0
+                        }
+                    } catch (e) { }
+                    finally { statsPending = false }
+                }
+
+                const fetchAccounts = async (silent = false) => {
+                    if (accountsPending) return
+                    accountsPending = true
+                    if (!silent) isFetching.value = true
+                    try {
+                        const res = await fetch('/api/accounts?limit=50')
+                        if (res.ok) accounts.value = await res.json()
+                    } catch (e) { }
+                    finally {
+                        accountsPending = false
+                        if (!silent) isFetching.value = false
+                    }
+                }
+
+                const fetchLogs = async (lines = currentTab.value === 'Logs' ? 220 : 60) => {
+                    if (logsPending) return
+                    logsPending = true
+                    try {
+                        const res = await fetch(`/api/logs?lines=${lines}`)
+                        if (res.ok) {
+                            const d = await res.json()
+                            const nextLogs = Array.isArray(d.logs) ? d.logs : []
+                            const isNew = nextLogs.length !== logs.value.length ||
+                                (nextLogs.length > 0 && nextLogs[nextLogs.length - 1] !== logs.value[logs.value.length - 1])
+                            if (isNew) {
+                                logs.value = nextLogs
+                                if (autoTail.value && currentTab.value === 'Logs') {
+                                    nextTick(() => {
+                                        const el = document.getElementById('log-container')
+                                        if (el) el.scrollTop = el.scrollHeight
+                                    })
+                                }
+                            }
+                        }
+                    } catch (e) { }
+                    finally { logsPending = false }
+                }
+
+                // Actions
+                const startEngine = async () => {
+                    isLoading.value = true
+                    try {
+                        const res = await fetch('/api/control/run', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ count: formCount.value, concurrency: formConcurrency.value })
+                        })
+                        if (res.ok) {
+                            engineRunning.value = true
+                            fetchLogs(220)
+                            setTimeout(() => {
+                                currentTab.value = 'Logs';
+                            }, 250);
+                        } else {
+                            const err = await res.json()
+                            alert('点火受阻: ' + (err.detail || '核心握手不畅'))
+                        }
+                    } catch (e) {
+                        alert('网络层指令断裂: ' + e.message)
+                    } finally {
+                        isLoading.value = false
+                    }
+                }
+
+                const stopEngine = async () => {
+                    isLoading.value = true
+                    try {
+                        await fetch('/api/control/stop', { method: 'POST' })
+                        engineRunning.value = false
+                    } catch (e) {
+                        alert('拦截令传达失败: ' + e.message)
+                    } finally {
+                        isLoading.value = false
+                        currentTab.value = 'Overview'; // 切回安全概览
+                    }
+                }
+
+                const resetStats = async () => {
+                    try {
+                        const res = await fetch('/api/stats/reset', { method: 'POST' })
+                        if (res.ok) {
+                            stats.value.totalGenerated = 0
+                            stats.value.successCount = 0
+                            stats.value.failCount = 0
+                            accounts.value = []
+                            fetchStats()
+                            fetchAccounts()
+                        }
+                    } catch (e) { }
+                }
+
+                // Solver 状态轮询
+                const fetchSolverStatus = async () => {
+                    if (solverPending) return
+                    solverPending = true
+                    try {
+                        const res = await fetch('/api/solver-status')
+                        if (res.ok) solverStatus.value = await res.json()
+                    } catch (e) { }
+                    finally { solverPending = false }
+                }
+
+                // 双模式各自独立记忆地址，切换时自动填充
+                const apiPoolUrl = ref('')
+                const directSocksUrl = ref('')
+                const enableProxyPool = ref(false)
+                const proxyMode = ref('api_pool')  // api_pool / direct_socks
+                const savingApi = ref(false)
+                // 根据当前模式动态绑定到对应地址的 computed（可读可写）
+                const activeProxyUrl = computed({
+                    get: () => proxyMode.value === 'direct_socks' ? directSocksUrl.value : apiPoolUrl.value,
+                    set: (v) => {
+                        if (proxyMode.value === 'direct_socks') directSocksUrl.value = v
+                        else apiPoolUrl.value = v
+                    }
+                })
+                // 标记是否已完成首次配置同步（防止轮询覆盖用户正在编辑的值）
+                const proxyConfigSynced = ref(false)
+
+                // 代理池状态轮询
+                const fetchProxyPool = async () => {
+                    if (proxyPending) return
+                    proxyPending = true
+                    try {
+                        const res = await fetch('/api/proxy/status')
+                        if (res.ok) {
+                            const data = await res.json()
+                            proxyPool.value = data
+                            if (!proxyConfigSynced.value) {
+                                if (data.api_pool_url) apiPoolUrl.value = data.api_pool_url
+                                if (data.direct_socks_url) directSocksUrl.value = data.direct_socks_url
+                                if (data.enable_pool !== undefined) enableProxyPool.value = data.enable_pool
+                                if (data.proxy_mode) proxyMode.value = data.proxy_mode
+                                proxyConfigSynced.value = true
+                            }
+                        }
+                    } catch (e) { }
+                    finally { proxyPending = false }
+                }
+
+                const saveProxyApi = async () => {
+                    savingApi.value = true
+                    try {
+                        const res = await fetch('/api/proxy/config', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                api_pool_url: apiPoolUrl.value,
+                                direct_socks_url: directSocksUrl.value,
+                                enable_pool: enableProxyPool.value,
+                                proxy_mode: proxyMode.value
+                            })
+                        })
+                        if (res.ok) {
+                            // 轻提示，不打断体验
+                            const Toast = window.Swal ? window.Swal.mixin({
+                                toast: true,
+                                position: 'top-end',
+                                showConfirmButton: false,
+                                timer: 2000,
+                                timerProgressBar: true,
+                            }) : null;
+                            if (Toast) { Toast.fire({ icon: 'success', title: '代理设置已同步！' }); }
+                            // 保存成功后重置同步标志，允许从服务端重新同步最新配置
+                            proxyConfigSynced.value = false
+                            fetchProxyPool()
+                        } else {
+                            alert('更新失败，请检查连通性。')
+                        }
+                    } catch (e) {
+                        alert('网络请求失败。')
+                    } finally {
+                        savingApi.value = false
+                    }
+                }
+
+                // 专用的 Toggle 触发器：乐观 UI 更新
+                const toggleProxyPool = () => {
+                    // 第一时间反转前端 UI 状态，给予物理丝滑的点击反馈
+                    enableProxyPool.value = !enableProxyPool.value;
+                    // 在后台默默发送 API 保存状态
+                    saveProxyApi();
+                }
+
+                const proxyRefresh = async () => {
+                    proxyRefreshing.value = true
+                    try {
+                        await fetch('/api/proxy/refresh', { method: 'POST' })
+                        setTimeout(fetchProxyPool, 15000)
+                    } catch (e) { }
+                    finally { setTimeout(() => proxyRefreshing.value = false, 15000) }
+                }
+                const proxySwitch = async (idx) => {
+                    // 乐观更新 UI：不等服务器返回，直接把前端数组里的这一项点绿，实现“毫秒级无感切换”
+                    if (proxyPool.value && proxyPool.value.proxies && proxyPool.value.proxies[idx]) {
+                        proxyPool.value.proxies.forEach(p => p.active = false)
+                        proxyPool.value.proxies[idx].active = true
+                        proxyPool.value.active_proxy = proxyPool.value.proxies[idx].addr
+                    }
+                    try {
+                        const res = await fetch(`/api/proxy/switch?index=${idx}`)
+                        if (res.ok) setTimeout(fetchProxyPool, 500)
+                    } catch (e) { }
+                }
+
+
+                // ====== sing-box 代理池 ======
+                const createDefaultSingboxState = () => ({
+                    running: false,
+                    node_count: 0,
+                    total_uris: 0,
+                    parsed_count: 0,
+                    available_count: 0,
+                    parse_failed_count: 0,
+                    quick_probe_failed_count: 0,
+                    region_excluded_count: 0,
+                    manual_disabled_count: 0,
+                    parsed_nodes: [],
+                    available_nodes: [],
+                    parse_failed_nodes: [],
+                    quick_probe_failed_nodes: [],
+                    region_excluded_nodes: [],
+                    manual_disabled_nodes: [],
+                    listen_port: 2080,
+                    subscribe_url: '',
+                    enabled: false,
+                    bin_exists: false,
+                    config_exists: false,
+                    config_path: '',
+                    last_message: '',
+                    last_refresh_message: '',
+                    stdout_log_tail: '',
+                    stderr_log_tail: '',
+                    availability_basis: 'tcp_connectivity_only',
+                    availability_basis_label: '仅 TCP 快速探测',
+                    xai_probe_enabled: false,
+                    target_url: 'https://accounts.x.ai/sign-up?redirect=grok-com',
+                    diagnostic_warning: '',
+                    region_filter_enabled: true,
+                    region_filter_mode: 'exclude_hk_tw_cn',
+                    region_filter_label: '排除港/台/国内节点',
+                    region_filter_warning: ''
+                })
+                const singbox = ref(createDefaultSingboxState())
+                const sbSubscribeUrl = ref('')
+                const sbListenPort = ref(2080)
+                const sbEnabled = ref(false)
+                const sbRefreshing = ref(false)
+                const sbStarting = ref(false)
+                const sbStopping = ref(false)
+                const sbSaving = ref(false)
+                const sbDownloading = ref(false)
+                const sbMessage = ref('')
+                const sbMessageOk = ref(true)
+                const sbNodeActioningKey = ref('')
+
+                const fetchSingbox = async () => {
+                    if (singboxPending) return
+                    singboxPending = true
+                    try {
+                        const res = await fetch('/api/singbox/status')
+                        if (res.ok) {
+                            const d = await res.json()
+                            singbox.value = {
+                                ...createDefaultSingboxState(),
+                                ...d,
+                                parsed_nodes: d.parsed_nodes || [],
+                                available_nodes: d.available_nodes || [],
+                                parse_failed_nodes: d.parse_failed_nodes || [],
+                                quick_probe_failed_nodes: d.quick_probe_failed_nodes || [],
+                                region_excluded_nodes: d.region_excluded_nodes || [],
+                                manual_disabled_nodes: d.manual_disabled_nodes || [],
+                                stdout_log_tail: d.stdout_log_tail || d.stdout_log || '',
+                                stderr_log_tail: d.stderr_log_tail || d.stderr_log || '',
+                            }
+                            if (d.subscribe_url && !sbSubscribeUrl.value) sbSubscribeUrl.value = d.subscribe_url
+                            if (d.listen_port) sbListenPort.value = d.listen_port
+                            if (d.enabled !== undefined) sbEnabled.value = d.enabled
+                        }
+                    } catch (e) { }
+                    finally { singboxPending = false }
+                }
+
+                const sbSaveConfig = async () => {
+                    sbSaving.value = true; sbMessage.value = ''
+                    try {
+                        const res = await fetch('/api/singbox/config', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ subscribe_url: sbSubscribeUrl.value, listen_port: sbListenPort.value, enabled: sbEnabled.value })
+                        })
+                        let detail = ''
+                        try {
+                            const data = await res.json()
+                            detail = data.detail || data.message || data.error || ''
+                        } catch (_) {
+                            try {
+                                detail = await res.text()
+                            } catch (_) { }
+                        }
+                        sbMessage.value = res.ok ? '✓ 配置已保存' : `保存失败${detail ? `：${detail}` : ''}`
+                        sbMessageOk.value = res.ok
+                        setTimeout(() => sbMessage.value = '', 5000)
+                    } catch (e) {
+                        sbMessage.value = `网络错误：${e?.message || '请求未到达后端'}`
+                        sbMessageOk.value = false
+                    }
+                    finally { sbSaving.value = false }
+                }
+
+                const sbToggleEnabled = () => { sbEnabled.value = !sbEnabled.value; sbSaveConfig() }
+
+                const getSingboxNodeKey = (node) => {
+                    const raw = node || {}
+                    if (raw.node_key) return String(raw.node_key)
+                    return [
+                        raw.type || '',
+                        raw.tag || '',
+                        raw.server || '',
+                        raw.server_port || ''
+                    ].map(v => String(v)).join('|')
+                }
+
+                const isSingboxNodeManualDisabled = (node) => {
+                    const key = getSingboxNodeKey(node)
+                    if (!key) return false
+                    return (singbox.value.manual_disabled_nodes || []).some(item => getSingboxNodeKey(item) === key)
+                }
+
+                const sbToggleNodeDisabled = async (node, disabled) => {
+                    const nodeKey = getSingboxNodeKey(node)
+                    if (!nodeKey) {
+                        sbMessage.value = '节点标识缺失，无法执行手动禁用操作'
+                        sbMessageOk.value = false
+                        setTimeout(() => sbMessage.value = '', 5000)
+                        return
+                    }
+                    sbNodeActioningKey.value = nodeKey
+                    try {
+                        const res = await fetch(disabled ? '/api/singbox/node/disable' : '/api/singbox/node/enable', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                tag: node.tag || '',
+                                type: node.type || '',
+                                server: node.server || '',
+                                server_port: node.server_port || ''
+                            })
+                        })
+                        let data = null
+                        try {
+                            data = await res.json()
+                        } catch (_) { }
+                        sbMessage.value = data?.message || (res.ok
+                            ? (disabled ? '节点已手动禁用' : '节点已恢复')
+                            : (data?.detail || '节点操作失败'))
+                        sbMessageOk.value = res.ok && data?.success !== false
+                        setTimeout(fetchSingbox, 1000)
+                        setTimeout(() => sbMessage.value = '', 5000)
+                    } catch (e) {
+                        sbMessage.value = `节点操作失败：${e?.message || '请求未到达后端'}`
+                        sbMessageOk.value = false
+                    } finally {
+                        sbNodeActioningKey.value = ''
+                    }
+                }
+
+                const sbRefresh = async () => {
+                    sbRefreshing.value = true; sbMessage.value = ''
+                    try {
+                        const res = await fetch('/api/singbox/refresh', { method: 'POST' })
+                        const d = await res.json()
+                        sbMessage.value = d.message || (d.success ? '刷新成功' : '刷新失败')
+                        sbMessageOk.value = !!d.success
+                        setTimeout(fetchSingbox, 1000)
+                        setTimeout(() => sbMessage.value = '', 5000)
+                    } catch (e) { sbMessage.value = '请求失败'; sbMessageOk.value = false }
+                    finally { sbRefreshing.value = false }
+                }
+
+                const sbStart = async () => {
+                    sbStarting.value = true
+                    try {
+                        const res = await fetch('/api/singbox/start', { method: 'POST' })
+                        const d = await res.json()
+                        sbMessage.value = d.message; sbMessageOk.value = !!d.success
+                        setTimeout(fetchSingbox, 1000)
+                        setTimeout(() => sbMessage.value = '', 5000)
+                    } catch (e) { sbMessage.value = '启动请求失败'; sbMessageOk.value = false }
+                    finally { sbStarting.value = false }
+                }
+
+                const sbStop = async () => {
+                    sbStopping.value = true
+                    try {
+                        const res = await fetch('/api/singbox/stop', { method: 'POST' })
+                        const d = await res.json()
+                        sbMessage.value = d.message; sbMessageOk.value = !!d.success
+                        setTimeout(fetchSingbox, 1000)
+                        setTimeout(() => sbMessage.value = '', 5000)
+                    } catch (e) { sbMessage.value = '停止请求失败'; sbMessageOk.value = false }
+                    finally { sbStopping.value = false }
+                }
+
+                const sbDownload = async () => {
+                    sbDownloading.value = true
+                    try {
+                        const res = await fetch('/api/singbox/download', { method: 'POST' })
+                        const d = await res.json()
+                        sbMessage.value = d.message; sbMessageOk.value = !!d.success
+                        setTimeout(fetchSingbox, 1000)
+                        setTimeout(() => sbMessage.value = '', 5000)
+                    } catch (e) { sbMessage.value = '下载失败'; sbMessageOk.value = false }
+                    finally { sbDownloading.value = false }
+                }
+
+                const refreshCurrentTab = () => {
+                    if (currentTab.value === 'Overview') {
+                        fetchStats()
+                        fetchSolverStatus()
+                        return
+                    }
+                    if (currentTab.value === 'Monitor') {
+                        fetchStats()
+                        fetchSolverStatus()
+                        return
+                    }
+                    if (currentTab.value === 'Logs') {
+                        fetchLogs(220)
+                        nextTick(() => {
+                            const el = document.getElementById('log-container')
+                            if (el && autoTail.value) el.scrollTop = el.scrollHeight
+                        })
+                        return
+                    }
+                    if (currentTab.value === 'Accounts') {
+                        fetchAccounts()
+                        return
+                    }
+                    if (currentTab.value === 'ProxyPool') {
+                        fetchProxyPool()
+                        return
+                    }
+                    if (currentTab.value === 'SingBox') {
+                        fetchSingbox()
+                    }
+                }
+
+                const handleVisibilityChange = () => {
+                    if (isPageVisible()) refreshCurrentTab()
+                }
+
+                watch(currentTab, () => {
+                    refreshCurrentTab()
+                })
+
+                onMounted(() => {
+                    document.addEventListener('visibilitychange', handleVisibilityChange)
+                    fetchStats()
+                    fetchSolverStatus()
+                    fetchProxyPool()
+                    fetchSingbox()
+
+                    statsTimer = setInterval(() => {
+                        if (isPageVisible() && (currentTab.value === 'Overview' || currentTab.value === 'Monitor')) {
+                            fetchStats()
+                        }
+                    }, 5000)
+
+                    accountsTimer = setInterval(() => {
+                        if (isPageVisible() && currentTab.value === 'Accounts') {
+                            fetchAccounts(true)
+                        }
+                    }, 12000)
+
+                    logTimer = setInterval(() => {
+                        if (isPageVisible() && currentTab.value === 'Logs') {
+                            fetchLogs(220)
+                        }
+                    }, 1500)
+
+                    proxyTimer = setInterval(() => {
+                        if (isPageVisible() && currentTab.value === 'ProxyPool') {
+                            fetchProxyPool()
+                        }
+                    }, 8000)
+
+                    solverTimer = setInterval(() => {
+                        if (isPageVisible() && (currentTab.value === 'Overview' || currentTab.value === 'Monitor')) {
+                            fetchSolverStatus()
+                        }
+                    }, 6000)
+
+                    singboxTimer = setInterval(() => {
+                        if (isPageVisible() && currentTab.value === 'SingBox') {
+                            fetchSingbox()
+                        }
+                    }, 8000)
+
+                    elapsedTimer = setInterval(() => {
+                        if (engineRunning.value) elapsed.value++
+                    }, 1000)
+                })
+                onUnmounted(() => {
+                    document.removeEventListener('visibilitychange', handleVisibilityChange)
+                    if (statsTimer) clearInterval(statsTimer)
+                    if (accountsTimer) clearInterval(accountsTimer)
+                    if (logTimer) clearInterval(logTimer)
+                    if (proxyTimer) clearInterval(proxyTimer)
+                    if (solverTimer) clearInterval(solverTimer)
+                    if (singboxTimer) clearInterval(singboxTimer)
+                    if (elapsedTimer) clearInterval(elapsedTimer)
+                })
+
+                return {
+                    currentTab,
+                    stats, accounts, logs, displayLogs, solverBrowserSegments, isFetching, isLoading,
+                    engineRunning, formCount, formConcurrency,
+                    autoTail, logFilterMode, elapsed, formatTime,
+                    logColor, fetchStats, fetchAccounts, startEngine, stopEngine, resetStats,
+                    proxyPool, proxyRefreshing, fetchProxyPool, proxyRefresh, proxySwitch,
+                    apiPoolUrl, directSocksUrl, activeProxyUrl, savingApi, saveProxyApi, proxyMode,
+                    enableProxyPool, toggleProxyPool,
+                    solverStatus, fetchSolverStatus,
+                    singbox, sbSubscribeUrl, sbListenPort, sbEnabled,
+                    sbRefreshing, sbStarting, sbStopping, sbSaving, sbDownloading,
+                    sbMessage, sbMessageOk, sbNodeActioningKey,
+                    getSingboxNodeKey, isSingboxNodeManualDisabled, sbToggleNodeDisabled,
+                    sbSaveConfig, sbToggleEnabled, sbRefresh, sbStart, sbStop, sbDownload,
+
+                    // 对外暴露鉴权层状态集与函数
+                    isAuthenticated, loginPassword, isLoggingIn, loginError, doLogin
+                }
+            }
+        }).mount('#app')
+    </script>
+</body>
+
+</html>

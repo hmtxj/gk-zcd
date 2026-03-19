@@ -1,0 +1,60 @@
+# Git / 文档
+.git
+**/.git
+*.md
+
+# 运行时数据
+data/
+
+# Python 缓存
+__pycache__/
+**/__pycache__/
+*.pyc
+**/*.pyc
+*.pyo
+**/*.pyo
+
+# 环境变量
+.env
+.env.*
+!.env.example
+
+# 敏感账号与本地配置
+accounts.csv
+key.txt
+proxy_config.json
+solver_config.json
+solver_nodes.txt
+singbox_config.json
+singbox_user_config.json
+grok-nsfw-manager/data/tokens.db
+
+# 调试 / 测试产物
+mailtm_debug_*.json
+web_*retest*.json
+web_turnstile_followup_result.json
+*.log
+*测试日志.txt
+*部署日志.txt
+未开启nsfw.txt
+
+# 已废弃或不用于当前主镜像的目录/文件
+turnstile_server/
+api_solver.py
+.clinerules/
+grok-nsfw-manager/
+socks5-proxy-main/
+turnstile-solver-docker/
+im-mail邮箱 优化版/
+downloaded_files/
+
+# 本地运行残留
+turnstile_server/.local/
+turnstile_server/.solver_installed
+
+# 可执行文件
+*.exe
+singbox/sing-box.exe
+
+# 仅保留当前主镜像真正需要的源码；action_id_fetcher 必须打包
+!action_id_fetcher.py

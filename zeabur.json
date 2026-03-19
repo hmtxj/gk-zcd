@@ -1,0 +1,6 @@
+{
+  "$schema": "https://schema.zeabur.app/template.json",
+  "name": "Turnstile Solver",
+  "description": "Cloudflare Turnstile 解题微服务节点",
+  "port": 8000
+}

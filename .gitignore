@@ -1,0 +1,88 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+env.bak/
+venv.bak/
+
+# 运行时数据目录
+data/
+
+# 环境变量
+.env
+.env.*
+!.env.example
+
+# 敏感账号与本地配置
+accounts.csv
+key.txt
+proxy_config.json
+solver_config.json
+solver_nodes.txt
+singbox_config.json
+singbox_user_config.json
+grok-nsfw-manager/data/tokens.db
+
+# 日志及结果
+*.log
+*测试日志.txt
+*部署日志.txt
+未开启nsfw.txt
+
+# 打包与构建
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 运行态文件
+turnstile_server/.local/
+turnstile_server/.solver_installed
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# 可执行文件与系统自带包
+*.exe
+singbox/sing-box.exe
+
+# 与当前主项目无关的历史目录/工具包
+.clinerules/
+grok-nsfw-manager/
+socks5-proxy-main/
+turnstile-solver-docker/
+im-mail邮箱 优化版/
+
+# 文档与本地快捷脚本
+bug总结.md
+*.bat
+*.sh
+*.ps1
+analyze_logs.py
+fix_import.py
+/api_solver.py
+
+# 临时排障 / 生成产物
+/tmp_*.py
+/upload_deploy.sh
+/分析.md
+/修复.md

@@ -1,0 +1,10 @@
+aiofiles
+curl_cffi
+fastapi
+httpx
+psutil
+pydantic
+python-multipart
+quart
+rich
+uvicorn
