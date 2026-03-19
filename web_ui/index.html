@@ -1409,9 +1409,9 @@
 
                 <!-- ━━━━━━━━━━━━━━━━━━━━━━━━━ [ 视图四：账户池明细 (Accounts) ] ━━━━━━━━━━━━━━━━━━━━━━━━━ -->
                 <div v-else-if="currentTab === 'Accounts'"
-                    class="view-page view-accounts absolute inset-0 p-6 md:p-8 flex flex-col h-full overflow-hidden"
+                    class="view-page view-accounts absolute inset-0 p-6 md:p-8 overflow-y-auto custom-scroll flex flex-col gap-6"
                     key="accounts">
-                    <header class="flex items-center justify-between mb-6 shrink-0">
+                    <header class="flex items-start justify-between gap-4 shrink-0">
                         <div class="flex items-center gap-3">
                             <div
                                 class="w-[32px] h-[32px] rounded-[8px] bg-blue-50 flex items-center justify-center shrink-0 border border-blue-100">
@@ -1421,41 +1421,177 @@
                                 </svg>
                             </div>
                             <div>
-                                <h1 class="text-[20px] font-bold text-gray-900 tracking-tight">账号列表</h1>
-                                <p class="text-[13px] text-gray-500 mt-1">查看最新生成账号与脱敏密码信息</p>
+                                <h1 class="text-[20px] font-bold text-gray-900 tracking-tight">结果资产中心</h1>
+                                <p class="text-[13px] text-gray-500 mt-1">查看当前批次与全量结果，下载三件套文件并预览最近产出</p>
                             </div>
+                        </div>
+                        <div class="flex flex-wrap items-center gap-3">
+                            <button @click="fetchAccounts" :disabled="isFetching"
+                                class="h-8 px-4 rounded-[16px] bg-white border border-gray-200 text-[13px] font-medium text-gray-700 hover:text-brand-blue hover:border-brand-blue transition-colors shadow-soft disabled:opacity-50">
+                                {{ isFetching ? '刷新中...' : '刷新资产面板' }}
+                            </button>
+                            <button @click="archiveCurrentBatch"
+                                :disabled="archiveLoading || engineRunning || !resultsSummary.actions.can_archive_current"
+                                class="h-8 px-4 rounded-[16px] bg-[#0F172A] text-white text-[13px] font-medium transition-colors shadow-soft disabled:opacity-50">
+                                {{ archiveLoading ? '封存中...' : '封存当前批次并新建' }}
+                            </button>
                         </div>
                     </header>
 
-                    <div
-                        class="accounts-shell flex-1 bg-white rounded-[16px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] flex flex-col min-h-0 overflow-hidden">
-                        <div
-                            class="px-6 py-4 border-b border-gray-100 flex items-center justify-between shrink-0 bg-[#FAFAFA]">
-                            <h2 class="text-[14px] font-bold text-gray-700">最新账号产出</h2>
-                            <button @click="fetchAccounts"
-                                class="flex items-center gap-1.5 h-8 px-4 rounded border border-gray-300 bg-white hover:bg-gray-50 font-medium text-[12px] text-gray-600 transition-colors">
-                                <svg class="w-3.5 h-3.5" :class="{'animate-spin text-brand-blue': isFetching}"
-                                    fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                        d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                                </svg>
-                                人工重载数据
-                            </button>
+                    <div v-if="resultsMessage"
+                        class="px-4 py-3 rounded-[14px] border text-[13px] font-medium"
+                        :class="resultsMessageOk ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-rose-50 border-rose-200 text-rose-600'">
+                        {{ resultsMessage }}
+                    </div>
+
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                        <div class="bg-white rounded-[20px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] p-6">
+                            <div class="flex items-start justify-between gap-4">
+                                <div>
+                                    <div class="text-[12px] font-bold tracking-[0.18em] text-gray-400 uppercase">当前批次</div>
+                                    <div class="mt-2 text-[18px] font-bold text-gray-900">{{ resultsSummary.current_batch.batch_id || '待初始化' }}</div>
+                                    <div class="mt-1 text-[12px] text-gray-500">开始时间：{{ resultsSummary.current_batch.started_at || '暂无' }}</div>
+                                </div>
+                                <button @click="downloadResultZip('current')"
+                                    :disabled="downloadLoadingKey === 'current-zip'"
+                                    class="h-8 px-4 rounded-[16px] bg-white border border-gray-200 text-[12px] font-medium text-gray-700 hover:text-brand-blue hover:border-brand-blue transition-colors disabled:opacity-50">
+                                    {{ downloadLoadingKey === 'current-zip' ? '打包中...' : '下载本批次 ZIP' }}
+                                </button>
+                            </div>
+                            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5">
+                                <div class="rounded-[16px] border border-gray-100 bg-[#FCFCFD] px-4 py-4">
+                                    <div class="text-[12px] text-gray-500">账号数</div>
+                                    <div class="mt-2 text-[22px] font-bold text-gray-900">{{ resultsSummary.current_batch.accounts_count }}</div>
+                                </div>
+                                <div class="rounded-[16px] border border-gray-100 bg-[#FCFCFD] px-4 py-4">
+                                    <div class="text-[12px] text-gray-500">已开 NSFW</div>
+                                    <div class="mt-2 text-[22px] font-bold text-emerald-600">{{ resultsSummary.current_batch.key_count }}</div>
+                                </div>
+                                <div class="rounded-[16px] border border-gray-100 bg-[#FCFCFD] px-4 py-4">
+                                    <div class="text-[12px] text-gray-500">未开启 NSFW</div>
+                                    <div class="mt-2 text-[22px] font-bold text-amber-600">{{ resultsSummary.current_batch.nsfw_fail_count }}</div>
+                                </div>
+                                <div class="rounded-[16px] border border-gray-100 bg-[#FCFCFD] px-4 py-4">
+                                    <div class="text-[12px] text-gray-500">最近更新</div>
+                                    <div class="mt-2 text-[13px] font-semibold text-gray-800 leading-5 break-all">{{ resultsSummary.current_batch.updated_at || '暂无' }}</div>
+                                </div>
+                            </div>
                         </div>
 
-                        <div class="flex-1 overflow-x-auto overflow-y-auto custom-scroll">
+                        <div class="bg-white rounded-[20px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] p-6">
+                            <div class="flex items-start justify-between gap-4">
+                                <div>
+                                    <div class="text-[12px] font-bold tracking-[0.18em] text-gray-400 uppercase">全量结果</div>
+                                    <div class="mt-2 text-[18px] font-bold text-gray-900">累计结果总览</div>
+                                    <div class="mt-1 text-[12px] text-gray-500">适合做归档、回溯与全量备份导出</div>
+                                </div>
+                                <button @click="downloadResultZip('all')"
+                                    :disabled="downloadLoadingKey === 'all-zip'"
+                                    class="h-8 px-4 rounded-[16px] bg-white border border-gray-200 text-[12px] font-medium text-gray-700 hover:text-brand-blue hover:border-brand-blue transition-colors disabled:opacity-50">
+                                    {{ downloadLoadingKey === 'all-zip' ? '打包中...' : '下载全量 ZIP' }}
+                                </button>
+                            </div>
+                            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5">
+                                <div class="rounded-[16px] border border-gray-100 bg-[#FCFCFD] px-4 py-4">
+                                    <div class="text-[12px] text-gray-500">账号总数</div>
+                                    <div class="mt-2 text-[22px] font-bold text-gray-900">{{ resultsSummary.all_time.accounts_count }}</div>
+                                </div>
+                                <div class="rounded-[16px] border border-gray-100 bg-[#FCFCFD] px-4 py-4">
+                                    <div class="text-[12px] text-gray-500">Key 总数</div>
+                                    <div class="mt-2 text-[22px] font-bold text-emerald-600">{{ resultsSummary.all_time.key_count }}</div>
+                                </div>
+                                <div class="rounded-[16px] border border-gray-100 bg-[#FCFCFD] px-4 py-4">
+                                    <div class="text-[12px] text-gray-500">失败池总数</div>
+                                    <div class="mt-2 text-[22px] font-bold text-amber-600">{{ resultsSummary.all_time.nsfw_fail_count }}</div>
+                                </div>
+                                <div class="rounded-[16px] border border-gray-100 bg-[#FCFCFD] px-4 py-4">
+                                    <div class="text-[12px] text-gray-500">最近更新</div>
+                                    <div class="mt-2 text-[13px] font-semibold text-gray-800 leading-5 break-all">{{ resultsSummary.all_time.updated_at || '暂无' }}</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                        <div class="bg-white rounded-[20px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] p-6 flex flex-col gap-4">
+                            <div class="flex items-center justify-between gap-3">
+                                <div>
+                                    <h2 class="text-[15px] font-bold text-gray-900">当前批次文件</h2>
+                                    <p class="text-[12px] text-gray-500 mt-1">避免重复下载，适合本轮交付</p>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 gap-3">
+                                <div v-for="file in resultsSummary.downloads.current" :key="'current-' + file.key"
+                                    class="rounded-[18px] border border-gray-100 bg-[#FCFCFD] px-4 py-4 flex items-center justify-between gap-4">
+                                    <div class="min-w-0">
+                                        <div class="text-[14px] font-bold text-gray-900 break-all">{{ file.filename }}</div>
+                                        <div class="mt-1 text-[12px] text-gray-500">{{ file.label }}</div>
+                                        <div class="mt-2 text-[12px] text-gray-500">{{ file.records }} 条 · {{ formatFileSize(file.size) }} · {{ file.updated_at || '暂无更新时间' }}</div>
+                                    </div>
+                                    <button @click="downloadResultFile('current', file.key, file.filename)"
+                                        :disabled="downloadLoadingKey === 'current-' + file.key"
+                                        class="shrink-0 h-8 px-4 rounded-[16px] bg-white border border-gray-200 text-[12px] font-medium text-gray-700 hover:text-brand-blue hover:border-brand-blue transition-colors disabled:opacity-50">
+                                        {{ downloadLoadingKey === 'current-' + file.key ? '下载中...' : '下载' }}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="bg-white rounded-[20px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] p-6 flex flex-col gap-4">
+                            <div class="flex items-center justify-between gap-3">
+                                <div>
+                                    <h2 class="text-[15px] font-bold text-gray-900">全量文件</h2>
+                                    <p class="text-[12px] text-gray-500 mt-1">适合全量归档与回溯，不避免重复</p>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 gap-3">
+                                <div v-for="file in resultsSummary.downloads.all" :key="'all-' + file.key"
+                                    class="rounded-[18px] border border-gray-100 bg-[#FCFCFD] px-4 py-4 flex items-center justify-between gap-4">
+                                    <div class="min-w-0">
+                                        <div class="text-[14px] font-bold text-gray-900 break-all">{{ file.filename }}</div>
+                                        <div class="mt-1 text-[12px] text-gray-500">{{ file.label }}</div>
+                                        <div class="mt-2 text-[12px] text-gray-500">{{ file.records }} 条 · {{ formatFileSize(file.size) }} · {{ file.updated_at || '暂无更新时间' }}</div>
+                                    </div>
+                                    <button @click="downloadResultFile('all', file.key, file.filename)"
+                                        :disabled="downloadLoadingKey === 'all-' + file.key"
+                                        class="shrink-0 h-8 px-4 rounded-[16px] bg-white border border-gray-200 text-[12px] font-medium text-gray-700 hover:text-brand-blue hover:border-brand-blue transition-colors disabled:opacity-50">
+                                        {{ downloadLoadingKey === 'all-' + file.key ? '下载中...' : '下载' }}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div
+                        class="accounts-shell bg-white rounded-[20px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] flex flex-col overflow-hidden">
+                        <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between gap-4 bg-[#FAFAFA]">
+                            <div>
+                                <h2 class="text-[14px] font-bold text-gray-700">最近结果预览</h2>
+                                <p class="text-[12px] text-gray-500 mt-1">默认只展示最近 20 条，便于抽查，不替代文件下载</p>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <button @click="resultsScope = 'current'; fetchAccounts()"
+                                    class="h-8 px-4 rounded-[16px] text-[12px] font-medium transition-colors"
+                                    :class="resultsScope === 'current' ? 'bg-[#0F172A] text-white' : 'bg-white border border-gray-200 text-gray-600 hover:text-brand-blue hover:border-brand-blue'">当前批次</button>
+                                <button @click="resultsScope = 'all'; fetchAccounts()"
+                                    class="h-8 px-4 rounded-[16px] text-[12px] font-medium transition-colors"
+                                    :class="resultsScope === 'all' ? 'bg-[#0F172A] text-white' : 'bg-white border border-gray-200 text-gray-600 hover:text-brand-blue hover:border-brand-blue'">全量结果</button>
+                            </div>
+                        </div>
+
+                        <div class="overflow-x-auto overflow-y-auto custom-scroll">
                             <table class="w-full text-left text-[14px]">
                                 <thead
                                     class="text-gray-500 text-[12px] font-medium border-b border-gray-100 sticky top-0 bg-white/95 backdrop-blur-md z-10">
                                     <tr>
-                                        <th class="px-8 py-5 font-bold">源宿主邮箱 / Gork 平台挂载标识</th>
-                                        <th class="px-8 py-5 font-bold">哈希鉴权解密 (安全覆盖)</th>
-                                        <th class="px-8 py-5 font-bold w-40 text-right">资产分层状态</th>
+                                        <th class="px-8 py-5 font-bold">邮箱账号</th>
+                                        <th class="px-8 py-5 font-bold">登录密码</th>
+                                        <th class="px-8 py-5 font-bold w-44 text-right">结果状态</th>
                                     </tr>
                                 </thead>
                                 <tbody class="divide-y divide-gray-50 text-gray-700 text-[13px]">
                                     <tr v-if="accounts.length === 0">
-                                        <td colspan="3" class="px-6 py-32 text-center bg-gray-50/30">
+                                        <td colspan="3" class="px-6 py-24 text-center bg-gray-50/30">
                                             <div class="flex flex-col items-center gap-3 text-gray-400">
                                                 <svg class="w-12 h-12 opacity-20" fill="none" viewBox="0 0 24 24"
                                                     stroke="currentColor">
@@ -1463,15 +1599,15 @@
                                                         stroke-width="1.5"
                                                         d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
                                                 </svg>
-                                                <span class="font-medium text-[14px]">当前还没有生成账号记录</span>
-                                                <span class="text-[12px]">请先回到概览页启动任务</span>
+                                                <span class="font-medium text-[14px]">当前作用域还没有结果记录</span>
+                                                <span class="text-[12px]">可先启动任务，或切换到全量结果查看历史数据</span>
                                             </div>
                                         </td>
                                     </tr>
                                     <tr v-for="(item, i) in accounts" :key="i"
-                                        class="hover:bg-[#F6FAFF] transition-colors group cursor-pointer">
-                                        <td class="px-8 py-4 font-mono text-[13px] text-brand-blue font-medium">
-                                            {{ item.email }}
+                                        class="hover:bg-[#F6FAFF] transition-colors group">
+                                        <td class="px-8 py-4 font-mono text-[13px] text-brand-blue font-medium break-all">
+                                            {{ item.email || 'N/A' }}
                                         </td>
                                         <td class="px-8 py-4 font-mono text-[13px] text-gray-500 password-cell">
                                             <span
@@ -1479,9 +1615,13 @@
                                                 item.password || 'N/A' }}</span>
                                         </td>
                                         <td class="px-8 py-4 text-right">
-                                            <span
+                                            <span v-if="item.cookie"
+                                                class="inline-flex items-center gap-1.5 px-3 py-1 rounded-sm text-[12px] font-bold bg-emerald-50 text-emerald-600 border border-emerald-200">
+                                                已含 SSO
+                                            </span>
+                                            <span v-else
                                                 class="inline-flex items-center gap-1.5 px-3 py-1 rounded-sm text-[12px] font-bold bg-[#E6F4FF] text-[#1677FF] border border-[#91caff]">
-                                                可用白名单
+                                                {{ resultsScope === 'current' ? '当前批次预览' : '全量结果预览' }}
                                             </span>
                                         </td>
                                     </tr>
@@ -2291,11 +2431,41 @@
                     nodes: []
                 })
                 const proxyRefreshing = ref(false)
+                const createDefaultResultsSummary = () => ({
+                    state: { current_batch_id: '', current_batch_started_at: '', last_archive_batch_id: '', last_archive_at: '' },
+                    current_batch: { batch_id: '', started_at: '', accounts_count: 0, key_count: 0, nsfw_fail_count: 0, updated_at: '', total_records: 0, has_content: false },
+                    all_time: { accounts_count: 0, key_count: 0, nsfw_fail_count: 0, updated_at: '', total_records: 0, has_content: false },
+                    downloads: { current: [], all: [] },
+                    actions: { can_archive_current: false },
+                })
+                const resultsSummary = ref(createDefaultResultsSummary())
+                const resultsScope = ref('current')
+                const downloadLoadingKey = ref('')
+                const archiveLoading = ref(false)
+                const resultsMessage = ref('')
+                const resultsMessageOk = ref(true)
 
                 const formatTime = (s) => {
                     const m = Math.floor(s / 60)
                     const sec = s % 60
                     return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
+                }
+
+                const formatFileSize = (bytes) => {
+                    const size = Number(bytes) || 0
+                    if (size < 1024) return `${size} B`
+                    if (size < 1024 * 1024) return `${(size / 1024).toFixed(size < 10 * 1024 ? 1 : 0)} KB`
+                    return `${(size / 1024 / 1024).toFixed(2)} MB`
+                }
+
+                const setResultsMessage = (message, ok = true) => {
+                    resultsMessage.value = message || ''
+                    resultsMessageOk.value = ok
+                    if (message) {
+                        setTimeout(() => {
+                            if (resultsMessage.value === message) resultsMessage.value = ''
+                        }, 5000)
+                    }
                 }
 
                 const displayLogs = computed(() => {
@@ -2373,12 +2543,108 @@
                     accountsPending = true
                     if (!silent) isFetching.value = true
                     try {
-                        const res = await fetch('/api/accounts?limit=50')
-                        if (res.ok) accounts.value = await res.json()
+                        const [summaryRes, previewRes] = await Promise.all([
+                            fetch('/api/results/summary'),
+                            fetch(`/api/results/preview?scope=${encodeURIComponent(resultsScope.value)}&limit=20`),
+                        ])
+                        if (summaryRes.ok) {
+                            resultsSummary.value = await summaryRes.json()
+                        }
+                        if (previewRes.ok) {
+                            const data = await previewRes.json()
+                            accounts.value = Array.isArray(data.items) ? data.items : []
+                        }
                     } catch (e) { }
                     finally {
                         accountsPending = false
                         if (!silent) isFetching.value = false
+                    }
+                }
+
+                const extractDownloadFilename = (res, fallbackName) => {
+                    const disposition = res.headers.get('Content-Disposition') || ''
+                    const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+                    if (utf8Match && utf8Match[1]) {
+                        try {
+                            return decodeURIComponent(utf8Match[1])
+                        } catch (e) { }
+                    }
+                    const plainMatch = disposition.match(/filename="?([^";]+)"?/i)
+                    if (plainMatch && plainMatch[1]) return plainMatch[1]
+                    return fallbackName
+                }
+
+                const triggerBlobDownload = (blob, filename) => {
+                    const objectUrl = URL.createObjectURL(blob)
+                    const link = document.createElement('a')
+                    link.href = objectUrl
+                    link.download = filename
+                    document.body.appendChild(link)
+                    link.click()
+                    link.remove()
+                    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+                }
+
+                const fetchAndDownload = async (url, fallbackFilename, loadingKey, successMessage) => {
+                    if (downloadLoadingKey.value) return
+                    downloadLoadingKey.value = loadingKey
+                    resultsMessage.value = ''
+                    try {
+                        const res = await fetch(url)
+                        if (!res.ok) {
+                            let detail = '下载失败'
+                            try {
+                                const data = await res.json()
+                                detail = data.detail || data.message || detail
+                            } catch (e) { }
+                            throw new Error(detail)
+                        }
+                        const blob = await res.blob()
+                        const filename = extractDownloadFilename(res, fallbackFilename)
+                        triggerBlobDownload(blob, filename)
+                        setResultsMessage(successMessage || `已开始下载 ${filename}`, true)
+                    } catch (e) {
+                        setResultsMessage(e?.message || '下载失败', false)
+                    } finally {
+                        downloadLoadingKey.value = ''
+                    }
+                }
+
+                const downloadResultFile = async (scope, fileKey, fallbackFilename) => {
+                    await fetchAndDownload(
+                        `/api/results/download?scope=${encodeURIComponent(scope)}&file=${encodeURIComponent(fileKey)}`,
+                        fallbackFilename,
+                        `${scope}-${fileKey}`,
+                        `已开始下载 ${fallbackFilename}`
+                    )
+                }
+
+                const downloadResultZip = async (scope) => {
+                    await fetchAndDownload(
+                        `/api/results/download-zip?scope=${encodeURIComponent(scope)}`,
+                        scope === 'current' ? 'current-results.zip' : 'all-results.zip',
+                        `${scope}-zip`,
+                        scope === 'current' ? '已开始下载当前批次 ZIP' : '已开始下载全量 ZIP'
+                    )
+                }
+
+                const archiveCurrentBatch = async () => {
+                    if (archiveLoading.value) return
+                    archiveLoading.value = true
+                    resultsMessage.value = ''
+                    try {
+                        const res = await fetch('/api/results/archive-current', { method: 'POST' })
+                        const data = await res.json().catch(() => ({}))
+                        if (!res.ok) {
+                            throw new Error(data.detail || data.message || '封存失败')
+                        }
+                        resultsScope.value = 'current'
+                        setResultsMessage(`已封存批次 ${data.archived_batch_id || ''}`.trim(), true)
+                        await fetchAccounts()
+                    } catch (e) {
+                        setResultsMessage(e?.message || '封存失败', false)
+                    } finally {
+                        archiveLoading.value = false
                     }
                 }
 
@@ -2453,10 +2719,18 @@
                             stats.value.successCount = 0
                             stats.value.failCount = 0
                             accounts.value = []
+                            resultsScope.value = 'current'
+                            resultsSummary.value = createDefaultResultsSummary()
                             fetchStats()
                             fetchAccounts()
+                            setResultsMessage('统计与结果文件已清空，并已开启新批次', true)
+                        } else {
+                            const data = await res.json().catch(() => ({}))
+                            setResultsMessage(data.detail || '清空失败', false)
                         }
-                    } catch (e) { }
+                    } catch (e) {
+                        setResultsMessage(e?.message || '清空失败', false)
+                    }
                 }
 
                 // Solver 状态轮询
@@ -2886,8 +3160,10 @@
                     currentTab,
                     stats, accounts, logs, displayLogs, solverBrowserSegments, isFetching, isLoading,
                     engineRunning, formCount, formConcurrency,
-                    autoTail, logFilterMode, elapsed, formatTime,
+                    autoTail, logFilterMode, elapsed, formatTime, formatFileSize,
                     logColor, fetchStats, fetchAccounts, startEngine, stopEngine, resetStats,
+                    resultsSummary, resultsScope, downloadLoadingKey, archiveLoading, resultsMessage, resultsMessageOk,
+                    downloadResultFile, downloadResultZip, archiveCurrentBatch,
                     proxyPool, proxyRefreshing, fetchProxyPool, proxyRefresh, proxySwitch,
                     apiPoolUrl, directSocksUrl, activeProxyUrl, savingApi, saveProxyApi, proxyMode,
                     enableProxyPool, toggleProxyPool,

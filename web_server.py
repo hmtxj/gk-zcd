@@ -19,7 +19,7 @@ from collections import deque
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
@@ -34,11 +34,23 @@ from singbox_manager import (
     refresh_subscription, download_singbox, SINGBOX_BIN,
     DEFAULT_LISTEN_PORT, set_manual_disabled_node,
 )
+from result_assets import (
+    ensure_result_store,
+    build_results_summary,
+    get_result_preview,
+    resolve_result_file,
+    build_results_zip,
+    archive_current_batch,
+    reset_live_results,
+    load_result_state,
+    load_account_rows_from_path,
+)
 
 app = FastAPI(title="Grok Register Control Center")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
+ensure_result_store()
 
 app.add_middleware(
     CORSMiddleware,
@@ -85,21 +97,17 @@ SCRIPT_PATH = os.path.join(BASE_DIR, "grok_hybrid_register_v6.py")
 SOLVER_NODES_FILE = os.path.join(BASE_DIR, "solver_nodes.txt")
 
 
-def _load_account_rows() -> tuple[bool, list[list[str]], list[str]]:
+def _load_account_rows() -> tuple[bool, list[str], list[list[str]]]:
     """读取 accounts.csv，兼容有表头/无表头两种格式。"""
-    if not os.path.exists(ACCOUNTS_CSV_PATH):
-        return False, [], []
+    return load_account_rows_from_path(ACCOUNTS_CSV_PATH)
 
-    with open(ACCOUNTS_CSV_PATH, 'r', encoding='utf-8') as f:
-        rows = [r for r in csv.reader(f) if any(cell.strip() for cell in r)]
 
-    if not rows:
-        return False, [], []
 
-    first_row = rows[0]
-    has_header = any("email" in str(cell).lower() for cell in first_row)
-    data_rows = rows[1:] if has_header else rows
-    return has_header, first_row if has_header else [], data_rows
+def _build_result_download_name(scope: str, filename: str) -> str:
+    if scope == "current":
+        batch_id = load_result_state().get("current_batch_id") or "current-batch"
+        return f"{batch_id}-{filename}"
+    return filename
 
 
 def _read_solver_nodes() -> list[str]:
@@ -450,52 +458,77 @@ def get_stats() -> Dict[str, Any]:
 
 @app.post("/api/stats/reset")
 def reset_stats():
-    """清空全部统计（成功/失败计数器 + CSV 账号记录）"""
+    """清空计数器与实时结果文件，并开启新批次。"""
+    if pm.is_running:
+        raise HTTPException(status_code=409, detail="引擎运行中，禁止清空结果文件。")
     pm.success_count = 0
     pm.fail_count = 0
-    # 清空 accounts.csv：有表头则保留表头，无表头则清空为 0 字节
-    if os.path.exists(ACCOUNTS_CSV_PATH):
-        try:
-            has_header, header, _ = _load_account_rows()
-            with open(ACCOUNTS_CSV_PATH, 'w', encoding='utf-8') as f:
-                if has_header and header:
-                    f.write(",".join(header) + '\n')
-        except Exception:
-            pass
-    return {"message": "统计已清空"}
+    reset_live_results()
+    return {"message": "统计与结果文件已清空，并已开启新批次"}
 
 @app.get("/api/accounts")
 def get_accounts(limit: int = 50) -> List[Dict[str, str]]:
-    """获取最新生成的账号列表（兼容无表头 CSV + Pydantic v2 严格校验）"""
-    accounts = []
-    if not os.path.exists(ACCOUNTS_CSV_PATH):
-        return accounts
-    # 默认列名：当 CSV 缺少表头时自动赋予
-    DEFAULT_FIELDS = ["email", "password", "cookie", "token"]
+    """兼容旧页面：返回全量结果中的最新账号预览。"""
     try:
-        with open(ACCOUNTS_CSV_PATH, 'r', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            rows = [r for r in reader if any(cell.strip() for cell in r)]
-            if not rows:
-                return accounts
-            # 智能检测表头：第一行若包含 "email" 则视为表头，否则全是数据
-            first_row = rows[0]
-            if any("email" in cell.lower() for cell in first_row):
-                header = first_row
-                data_rows = rows[1:]
-            else:
-                header = DEFAULT_FIELDS[:len(first_row)]
-                data_rows = rows
-            for row in data_rows:
-                item = {}
-                for i, field in enumerate(header):
-                    key = str(field).strip() if field else f"col_{i}"
-                    item[key] = row[i] if i < len(row) else ""
-                accounts.append(item)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"读取账号文件失败: {e}")
-    accounts.reverse()
-    return accounts[:limit]
+        return get_result_preview(scope="all", limit=limit)["items"]
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/results/summary")
+def get_results_summary() -> Dict[str, Any]:
+    """获取结果资产中心摘要（当前批次 + 全量结果）。"""
+    return build_results_summary()
+
+
+@app.get("/api/results/preview")
+def get_results_preview(scope: str = "current", limit: int = 20) -> Dict[str, Any]:
+    """获取结果预览列表。"""
+    try:
+        return get_result_preview(scope=scope, limit=limit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/results/download")
+def download_result_file(scope: str = "current", file: str = "accounts"):
+    """下载单个结果文件。"""
+    try:
+        file_info = resolve_result_file(scope, file)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return FileResponse(
+        path=file_info["path"],
+        filename=_build_result_download_name(file_info["scope"], file_info["filename"]),
+        media_type="application/octet-stream",
+    )
+
+
+@app.get("/api/results/download-zip")
+def download_results_zip(scope: str = "current"):
+    """打包下载指定作用域的三件套结果文件。"""
+    try:
+        zip_info = build_results_zip(scope)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return FileResponse(
+        path=zip_info["path"],
+        filename=zip_info["filename"],
+        media_type="application/zip",
+    )
+
+
+@app.post("/api/results/archive-current")
+def archive_results_current() -> Dict[str, Any]:
+    """封存当前批次并开启新批次。"""
+    if pm.is_running:
+        raise HTTPException(status_code=409, detail="引擎运行中，禁止封存当前批次。")
+    try:
+        return archive_current_batch()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/logs")
 def get_logs(lines: int = 200) -> Dict[str, Any]:

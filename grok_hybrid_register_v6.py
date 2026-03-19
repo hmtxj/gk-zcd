@@ -28,6 +28,12 @@ from curl_cffi.requests import AsyncSession as CurlAsyncSession
 
 from turnstile_solver import get_turnstile_token_async, get_solver_nodes
 from action_id_fetcher import fetch_action_id
+from result_assets import (
+    ensure_result_store,
+    CURRENT_ACCOUNTS_CSV_PATH,
+    CURRENT_KEY_TXT_PATH,
+    CURRENT_NSFW_FAIL_TXT_PATH,
+)
 
 import urllib.request
 
@@ -113,9 +119,13 @@ DEFAULT_SITE_KEY = "0x4AAAAAAAhr9JGVDZbrZOo0"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(SCRIPT_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
+ensure_result_store()
 ACCOUNTS_CSV = os.path.join(DATA_DIR, "accounts.csv")
 KEY_TXT = os.path.join(DATA_DIR, "key.txt")
 NSFW_FAIL_TXT = os.path.join(DATA_DIR, "未开启nsfw.txt")
+CURRENT_ACCOUNTS_CSV = CURRENT_ACCOUNTS_CSV_PATH
+CURRENT_KEY_TXT = CURRENT_KEY_TXT_PATH
+CURRENT_NSFW_FAIL_TXT = CURRENT_NSFW_FAIL_TXT_PATH
 
 # 并发控制全局锁与信号灯（在 batch_register 中初始化）
 file_lock: asyncio.Lock | None = None
@@ -905,28 +915,32 @@ async def _prefetch_tokens(http_client: httpx.AsyncClient, sitekey: str,
 # ========== 持久化写入（加锁保护） ==========
 
 async def save_account(account: dict):
-    """将注册结果写入 accounts.csv / key.txt / 未开启nsfw.txt"""
+    """将注册结果同时写入全量结果文件与当前批次结果文件"""
     global file_lock
     async with file_lock:
         sso = account.get("sso", "")
         sso_rw = account.get("sso_rw", "")
-        await asyncio.to_thread(
-            _append_file, ACCOUNTS_CSV,
-            f"\n{account['email']},{account['password']},{sso},{sso_rw}"
-        )
-        print(f"  ✅ 已保存到 accounts.csv")
+        account_line = f"\n{account['email']},{account['password']},{sso},{sso_rw}"
+        await asyncio.to_thread(_append_file, ACCOUNTS_CSV, account_line)
+        await asyncio.to_thread(_append_file, CURRENT_ACCOUNTS_CSV, account_line)
+        print(f"  ✅ 已保存到 accounts.csv（全量 + 当前批次）")
 
         if sso and account.get("nsfw_enabled"):
-            await asyncio.to_thread(_append_file, KEY_TXT, f"{sso}\n")
+            token_line = f"{sso}\n"
+            await asyncio.to_thread(_append_file, KEY_TXT, token_line)
+            await asyncio.to_thread(_append_file, CURRENT_KEY_TXT, token_line)
             print(f"  🔑 SSO Token 已追加到 key.txt（NSFW 已开启）")
         elif sso:
-            await asyncio.to_thread(_append_file, NSFW_FAIL_TXT, f"{sso}\n")
+            token_line = f"{sso}\n"
+            await asyncio.to_thread(_append_file, NSFW_FAIL_TXT, token_line)
+            await asyncio.to_thread(_append_file, CURRENT_NSFW_FAIL_TXT, token_line)
             print(f"  ⚠️ NSFW 未开启，SSO Token 已保存到 未开启nsfw.txt")
         else:
             print(f"  ⚠️ 未获取到 SSO Token")
 
 
 def _append_file(path: str, content: str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         f.write(content)
 
@@ -1146,6 +1160,7 @@ async def batch_register(count: int = 1, concurrency: int = 5):
     print(f"  📊 注册数量: {count}  并发数: {concurrency}")
     print("=" * 60)
 
+    ensure_result_store(migrate_legacy=False)
     results = []
 
     # 初始化全局锁（包括 Action ID 缓存锁）
