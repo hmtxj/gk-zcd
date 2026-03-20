@@ -22,11 +22,13 @@ import string
 import os
 import sys
 import asyncio
+import time
 from urllib.parse import unquote
 import httpx
 from curl_cffi.requests import AsyncSession as CurlAsyncSession
 
 from turnstile_solver import get_turnstile_token_async, get_solver_nodes
+from remote_solver_cluster import RemoteSolverCluster
 from action_id_fetcher import fetch_action_id
 from result_assets import (
     ensure_result_store,
@@ -133,6 +135,7 @@ semaphore: asyncio.Semaphore | None = None
 # Token 预热队列（在 batch_register 中初始化）
 token_queue: asyncio.Queue | None = None
 _prefetch_stop: asyncio.Event | None = None
+solver_cluster: RemoteSolverCluster | None = None
 
 # ========== 全局 Action ID 缓存（避免重复扫描） ==========
 _GLOBAL_ACTION_CACHE = {
@@ -151,6 +154,86 @@ _RUNTIME_NETWORK_STATE = {
     "lock": None,  # 在 batch_register 中初始化为 asyncio.Lock()
 }
 _batch_abort: asyncio.Event | None = None
+SOLVER_STATUS_SNAPSHOT_FILE = os.path.join(DATA_DIR, "solver_cluster_status.json")
+
+
+def _build_solver_status_base(reason: str = "", running: bool = False) -> dict[str, object]:
+    return {
+        "source": "remote_solver_cluster",
+        "running": running,
+        "reason": reason,
+        "configured_nodes": get_solver_nodes(),
+        "queue_target": 0,
+        "queue_size": 0,
+        "queue_capacity": 0,
+        "hit_count": 0,
+        "miss_count": 0,
+        "fallback_count": 0,
+        "direct_success_count": 0,
+        "direct_fail_count": 0,
+        "in_flight_prefetch_total": 0,
+        "in_flight_prefetch_by_node": {},
+        "last_fill_at": 0.0,
+        "last_consume_at": 0.0,
+        "reserve_for_direct": 0,
+        "per_node_prefetch": 0,
+        "max_queue_target": 0,
+        "prefetch_sitekey": "",
+        "nodes": [],
+    }
+
+
+def _write_solver_status_snapshot(payload: dict[str, object] | None = None):
+    snapshot = dict(payload or {})
+    snapshot["updated_at"] = round(time.time(), 3)
+    tmp_path = f"{SOLVER_STATUS_SNAPSHOT_FILE}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(snapshot, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, SOLVER_STATUS_SNAPSHOT_FILE)
+    except Exception as e:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        print(f"  ⚠️ [监控快照] 写入 Solver 状态失败: {e}")
+
+
+async def _capture_solver_status_snapshot(sitekey: str = "", running: bool | None = None, reason: str = ""):
+    snapshot = _build_solver_status_base(reason=reason, running=False)
+    snapshot["configured_nodes"] = get_solver_nodes()
+    snapshot["prefetch_sitekey"] = sitekey
+
+    if solver_cluster is not None:
+        cluster_snapshot = await solver_cluster.get_status_snapshot()
+        snapshot.update(cluster_snapshot)
+        snapshot["reserve_for_direct"] = int(getattr(solver_cluster, "_reserve_for_direct", 0) or 0)
+        snapshot["per_node_prefetch"] = int(getattr(solver_cluster, "_per_node_prefetch", 0) or 0)
+        snapshot["max_queue_target"] = int(getattr(solver_cluster, "_max_queue_target", snapshot.get("queue_capacity", 0)) or 0)
+        snapshot["prefetch_sitekey"] = sitekey or str(getattr(solver_cluster, "_prefetch_sitekey", "") or "")
+        if running is None:
+            snapshot["running"] = not (_prefetch_stop is not None and _prefetch_stop.is_set())
+        else:
+            snapshot["running"] = bool(running)
+    elif running is not None:
+        snapshot["running"] = bool(running)
+
+    _write_solver_status_snapshot(snapshot)
+
+
+async def _publish_solver_status_snapshot(sitekey: str = ""):
+    while True:
+        try:
+            await _capture_solver_status_snapshot(sitekey=sitekey)
+            await asyncio.sleep(1.5)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            _write_solver_status_snapshot(
+                _build_solver_status_base(reason=f"snapshot_publish_error: {e}", running=False)
+            )
+            await asyncio.sleep(2)
 
 
 async def get_cached_action_id(session: CurlAsyncSession) -> tuple[str, str]:
@@ -286,7 +369,7 @@ def is_timeout_like(message: str) -> bool:
 
 async def note_step0_result(success: bool, detail: str = "") -> bool:
     """记录 Step 0 结果；连续超时达到阈值时触发批量熔断。"""
-    global _RUNTIME_NETWORK_STATE, _batch_abort, _prefetch_stop
+    global _RUNTIME_NETWORK_STATE, _batch_abort, _prefetch_stop, solver_cluster
 
     lock = _RUNTIME_NETWORK_STATE.get("lock")
     if not lock:
@@ -315,6 +398,8 @@ async def note_step0_result(success: bool, detail: str = "") -> bool:
             _batch_abort.set()
         if _prefetch_stop is not None:
             _prefetch_stop.set()
+        if solver_cluster is not None:
+            asyncio.create_task(solver_cluster.stop_prefetch())
         return True
 
 
@@ -1021,17 +1106,24 @@ async def register_one_async(task_id: int, http_client: httpx.AsyncClient,
             print(f"\n{tag} [Step 3+5] 等待验证码 + 同时获取 Turnstile Token...")
 
             async def _get_token_parallel():
-                """并行获取 Turnstile Token（优先队列，回退直接请求，带重试）"""
+                """并行获取 Turnstile Token（优先队列，回退 direct path，统一走调度器）"""
+                if solver_cluster is not None:
+                    return await solver_cluster.acquire_token(
+                        sitekey=sitekey,
+                        queue_wait_timeout=5,
+                        direct_timeout=90,
+                        direct_attempts=2,
+                    )
+
                 t = None
                 if token_queue is not None:
                     try:
-                        # 只等 15 秒，快速回退到直接请求，避免被预热队列阻塞
-                        t = await asyncio.wait_for(token_queue.get(), timeout=15)
+                        # 兼容回退：仅当调度器未初始化时使用旧队列逻辑
+                        t = await asyncio.wait_for(token_queue.get(), timeout=5)
                         print(f"  ✅ 从预热队列取到 Token（队列剩余: {token_queue.qsize()}）")
                     except asyncio.TimeoutError:
-                        print(f"  ⚠️ 预热队列 15s 无现成 Token，回退到直接请求...")
+                        print(f"  ⚠️ 预热队列 5s 无现成 Token，回退到直接请求...")
                 if not t:
-                    # 直接请求，最多尝试 2 次（Solver 有概率失败）
                     for attempt in range(2):
                         t = await get_turnstile_token_async(
                             client=http_client, timeout=90, sitekey=sitekey
@@ -1152,8 +1244,8 @@ async def register_one_async(task_id: int, http_client: httpx.AsyncClient,
 # ========== 并发批量注册入口 ==========
 
 async def batch_register(count: int = 1, concurrency: int = 5):
-    """并发批量注册主入口（含 Token 预热队列 + 代理池动态分配 + Action ID 全局缓存）"""
-    global file_lock, semaphore, token_queue, _prefetch_stop, _GLOBAL_ACTION_CACHE, _RUNTIME_NETWORK_STATE, _batch_abort
+    """并发批量注册主入口（含远程调度中心 + Token 预热队列 + 代理池动态分配 + Action ID 全局缓存）"""
+    global file_lock, semaphore, token_queue, _prefetch_stop, solver_cluster, _GLOBAL_ACTION_CACHE, _RUNTIME_NETWORK_STATE, _batch_abort
 
     print("\n" + "=" * 60)
     print(f"  [启动] Grok 异步注册机 V6 - 批量模式")
@@ -1178,6 +1270,9 @@ async def batch_register(count: int = 1, concurrency: int = 5):
     queue_cap = concurrency * 2
     token_queue = asyncio.Queue(maxsize=queue_cap)
     _prefetch_stop = asyncio.Event()
+    solver_cluster = None
+    solver_status_task: asyncio.Task | None = None
+    _write_solver_status_snapshot(_build_solver_status_base(reason="initializing", running=False))
 
     # httpx 用于 Freemail 和 Turnstile Solver（无需 TLS 伪装）
     async with httpx.AsyncClient(
@@ -1222,6 +1317,7 @@ async def batch_register(count: int = 1, concurrency: int = 5):
         _RUNTIME_NETWORK_STATE["preflight_ok"] = preflight_ok
         _RUNTIME_NETWORK_STATE["preflight_detail"] = preflight_info.get("reason", "")
 
+        initial_sitekey = DEFAULT_SITE_KEY
         if not preflight_ok:
             _RUNTIME_NETWORK_STATE["abort_reason"] = f"x.ai 前置健康检查失败：{preflight_info.get('reason', '未知错误')}"
             _batch_abort.set()
@@ -1230,47 +1326,74 @@ async def batch_register(count: int = 1, concurrency: int = 5):
                 print(f"  ❌ [预检] 响应状态码: {preflight_info['status_code']}")
             if preflight_info.get("preview"):
                 print(f"  ❌ [预检] 页面预览: {preflight_info['preview']}")
+            _write_solver_status_snapshot(
+                _build_solver_status_base(reason=_RUNTIME_NETWORK_STATE["abort_reason"], running=False)
+            )
         else:
             print(f"  ✅ [预检] {preflight_info.get('reason', 'x.ai sign-up 页面可达')}")
 
-            # 先预热一次 Action ID / Sitekey 共享缓存，避免 Token 预热仍使用过期默认 sitekey
-            initial_sitekey = DEFAULT_SITE_KEY
             try:
-                warmup_grpc = AsyncGrokGRPCClient()
-                warmup_proxy = proxy_mgr.allocate()
-                async with CurlAsyncSession(**build_curl_session_kwargs(warmup_grpc.profile["impersonate"], warmup_proxy)) as warmup_session:
-                    _, initial_sitekey = await get_cached_action_id(warmup_session)
-                    print(f"  🔥 预热 Sitekey: {initial_sitekey}")
-            except Exception as e:
-                initial_sitekey = DEFAULT_SITE_KEY
-                print(f"  ⚠️ 预热获取 Sitekey 失败 ({e})，回退默认 Sitekey")
+                # 先预热一次 Action ID / Sitekey 共享缓存，避免 Token 预热仍使用过期默认 sitekey
+                try:
+                    warmup_grpc = AsyncGrokGRPCClient()
+                    warmup_proxy = proxy_mgr.allocate()
+                    async with CurlAsyncSession(**build_curl_session_kwargs(warmup_grpc.profile["impersonate"], warmup_proxy)) as warmup_session:
+                        _, initial_sitekey = await get_cached_action_id(warmup_session)
+                        print(f"  🔥 预热 Sitekey: {initial_sitekey}")
+                except Exception as e:
+                    initial_sitekey = DEFAULT_SITE_KEY
+                    print(f"  ⚠️ 预热获取 Sitekey 失败 ({e})，回退默认 Sitekey")
 
-            # 启动 Token 预热协程（后台持续运行，自动感知集群节点数）
-            # max_concurrent 代表每个节点的并发上限，预热协程内部会乘以节点数
-            # 每节点只允许 1 个预热并发，避免占满浏览器导致注册任务饥饿
-            per_node_concurrent = 1
-            prefetch_task = asyncio.create_task(
-                _prefetch_tokens(http_client, initial_sitekey,
-                                 max_concurrent=per_node_concurrent, queue_cap=queue_cap)
-            )
-
-            # 创建并发注册任务，每个任务分配独立代理 IP
-            tasks = [
-                asyncio.create_task(
-                    register_one_async(i + 1, http_client, semaphore,
-                                       proxy_addr=proxy_mgr.allocate())
+                # 启动远程解题调度中心：统一管理预热与 direct path
+                per_node_concurrent = 1
+                solver_cluster = RemoteSolverCluster(
+                    http_client=http_client,
+                    node_provider=get_solver_nodes,
+                    queue_capacity=queue_cap,
+                    queue_wait_timeout=5,
+                    token_timeout=90,
+                    poll_interval=2,
+                    token_max_age=110,
+                    breaker_seconds=15,
+                    breaker_threshold=2,
                 )
-                for i in range(count)
-            ]
+                token_queue = solver_cluster.token_queue
+                _prefetch_stop = solver_cluster._prefetch_stop
+                await solver_cluster.start_prefetch(
+                    initial_sitekey,
+                    max_queue_target=queue_cap,
+                    reserve_for_direct=1,
+                    per_node_prefetch=per_node_concurrent,
+                )
+                await _capture_solver_status_snapshot(sitekey=initial_sitekey, running=True, reason="prefetch_started")
+                solver_status_task = asyncio.create_task(_publish_solver_status_snapshot(sitekey=initial_sitekey))
 
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+                # 创建并发注册任务，每个任务分配独立代理 IP
+                tasks = [
+                    asyncio.create_task(
+                        register_one_async(i + 1, http_client, semaphore,
+                                           proxy_addr=proxy_mgr.allocate())
+                    )
+                    for i in range(count)
+                ]
 
-            # 注册全部完成，停止预热协程
-            _prefetch_stop.set()
-            try:
-                await asyncio.wait_for(prefetch_task, timeout=10)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                prefetch_task.cancel()
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            finally:
+                if _prefetch_stop is not None:
+                    _prefetch_stop.set()
+                if solver_cluster is not None:
+                    await solver_cluster.stop_prefetch()
+                if solver_status_task is not None:
+                    solver_status_task.cancel()
+                    try:
+                        await solver_status_task
+                    except asyncio.CancelledError:
+                        pass
+                await _capture_solver_status_snapshot(
+                    sitekey=initial_sitekey,
+                    running=False,
+                    reason=_RUNTIME_NETWORK_STATE.get("abort_reason") or "batch_finished",
+                )
 
     # 统计结果
     success = sum(1 for r in results if isinstance(r, dict))

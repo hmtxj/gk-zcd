@@ -107,18 +107,27 @@ async def get_turnstile_token_async(
             # 或者先检查健康状态，这取决于 Solver 集群的网络质量
             health = await client.get(f"{target_url}/", timeout=3)
             info = health.json()
-            available = info.get("available_browsers", 0)
-            print(f"[Turnstile] 节点 [{target_url}] 在线，可用浏览器: {available}/{info.get('total_browsers', '?')}")
-            
+            available = max(int(info.get("available_browsers", 0) or 0), 0)
+            total = info.get("total_browsers", "?")
+            print(f"[Turnstile] 节点 [{target_url}] 在线，可用浏览器: {available}/{total}")
+
+            if available <= 0:
+                print(f"[Turnstile] ⏭️ 节点 [{target_url}] 当前无空闲浏览器，跳过派单")
+                continue
+
             # 尝试在选定的节点上创建解题任务
             resp = await client.get(f"{target_url}/turnstile", params={
                 "url": SIGNUP_URL,
                 "sitekey": use_sitekey,
             }, timeout=5)
-            
+
             data = resp.json()
             task_id = data.get("task_id")
-            
+
+            if resp.status_code >= 400:
+                print(f"[Turnstile] ⚠️ 节点 [{target_url}] 拒绝接单: HTTP {resp.status_code} {data}")
+                continue
+
             if task_id:
                 selected_node = target_url
                 print(f"[Turnstile] ✅ 任务已分配至节点 [{selected_node}], TaskID: {task_id[:8]}...")
@@ -147,6 +156,8 @@ async def get_turnstile_token_async(
                 }, timeout=5)
                 result = resp.json()
                 status = result.get("status", "")
+                stage = result.get("stage", "")
+                message = result.get("message") or result.get("detail") or ""
 
                 if status == "completed":
                     token = result.get("solution", {}).get("token", "")
@@ -158,12 +169,19 @@ async def get_turnstile_token_async(
                         print(f"[Turnstile] ❌ 节点 [{selected_node}] 返回了失败的 Token")
                         return None
 
-                if status == "failed":
-                    print(f"[Turnstile] ❌ 节点 [{selected_node}] 宣布解题彻底失败")
+                if status in {"failed", "busy"}:
+                    detail_text = ""
+                    if stage:
+                        detail_text += f" 阶段={stage}"
+                    if message:
+                        detail_text += f" 原因={message}"
+                    print(f"[Turnstile] ❌ 节点 [{selected_node}] 宣布解题失败。{detail_text}".rstrip())
                     return None
 
                 if int(elapsed) % 10 == 0:
-                    print(f"[Turnstile] ⏳ 节点 [{selected_node}] 运算中... ({int(elapsed)}s / {timeout}s)")
+                    stage_text = f", 阶段={stage}" if stage else ""
+                    msg_text = f", 信息={message}" if message else ""
+                    print(f"[Turnstile] ⏳ 节点 [{selected_node}] 运算中... ({int(elapsed)}s / {timeout}s{stage_text}{msg_text})")
 
             except Exception as e:
                 print(f"[Turnstile] ⚠️ 轮询节点 [{selected_node}] 时遇到网络波动: {e}")

@@ -49,6 +49,7 @@ from result_assets import (
 app = FastAPI(title="Grok Register Control Center")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
+SOLVER_STATUS_SNAPSHOT_FILE = os.path.join(DATA_DIR, "solver_cluster_status.json")
 os.makedirs(DATA_DIR, exist_ok=True)
 ensure_result_store()
 
@@ -147,6 +148,127 @@ def _read_remote_solver_nodes() -> list[str]:
             continue
         remote_nodes.append(node)
     return remote_nodes
+
+
+def _normalize_remote_solver_node(node_url: str) -> str:
+    node = str(node_url or "").strip()
+    if not node:
+        return ""
+    if not node.startswith("http"):
+        node = f"http://{node}"
+    node = node.rstrip("/")
+    lowered = node.lower()
+    if "127.0.0.1" in lowered or "localhost" in lowered:
+        return ""
+    return node
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return default
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value or 0)
+    except Exception:
+        return default
+
+
+def _load_solver_cluster_snapshot() -> dict[str, Any]:
+    if not os.path.exists(SOLVER_STATUS_SNAPSHOT_FILE):
+        return {}
+    try:
+        with open(SOLVER_STATUS_SNAPSHOT_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        return {"reason": f"snapshot_read_error: {e}"}
+
+
+def _build_solver_node_status(
+    node_url: str,
+    live_data: dict[str, Any] | None = None,
+    snapshot_node: dict[str, Any] | None = None,
+    error: str = "",
+) -> dict[str, Any]:
+    live_data = live_data or {}
+    snapshot_node = snapshot_node or {}
+
+    available = _safe_int(live_data.get("available_browsers", snapshot_node.get("available_browsers", 0)))
+    raw_available = _safe_int(live_data.get("raw_available_browsers", snapshot_node.get("raw_available_browsers", available)))
+    reserved_slots = _safe_int(live_data.get("reserved_slots", snapshot_node.get("reserved_slots", 0)))
+    total_browsers = _safe_int(live_data.get("total_browsers", snapshot_node.get("total_browsers", 0)))
+    tracked_tasks = _safe_int(live_data.get("tracked_tasks", snapshot_node.get("tracked_tasks", 0)))
+    solved = _safe_int(live_data.get("total_solved", snapshot_node.get("success_count", 0)))
+    failed = _safe_int(live_data.get("total_failed", snapshot_node.get("fail_count", 0)))
+    rejected = _safe_int(snapshot_node.get("rejected_count", 0))
+    in_flight_total = _safe_int(snapshot_node.get("in_flight_total", 0))
+    in_flight_prefetch = _safe_int(snapshot_node.get("in_flight_prefetch", 0))
+    in_flight_direct = _safe_int(snapshot_node.get("in_flight_direct", 0))
+    breaker_remaining = round(_safe_float(snapshot_node.get("breaker_remaining", 0.0)), 3)
+    last_seen_at = _safe_float(snapshot_node.get("last_seen_at", 0.0))
+    avg_solve_time = round(_safe_float(live_data.get("avg_solve_time", snapshot_node.get("avg_solve_time", 0.0))), 3)
+    memory_mb = round(_safe_float(live_data.get("memory_mb", 0.0)), 1)
+
+    success_attempts = solved + failed
+    success_rate = round((solved / success_attempts * 100), 1) if success_attempts > 0 else round(_safe_float(snapshot_node.get("success_rate", 0.0)) * 100, 1)
+
+    online = bool(live_data) and not error
+    last_status = str(snapshot_node.get("last_status") or ("healthy" if online else "offline"))
+    last_stage = str(snapshot_node.get("last_stage") or "")
+    last_message = str(snapshot_node.get("last_message") or live_data.get("message") or "")
+    last_error = str(error or snapshot_node.get("last_error") or "")
+    consecutive_failures = _safe_int(snapshot_node.get("consecutive_failures", 0))
+    breaker_active = breaker_remaining > 0
+    effective_capacity = max(available - in_flight_total, 0)
+    busy = online and (available <= 0 or effective_capacity <= 0 or last_status == "busy")
+    degraded = breaker_active or consecutive_failures > 0 or last_status in {"failed", "timeout", "offline"}
+    stale = (not online) and bool(snapshot_node)
+
+    if live_data and snapshot_node:
+        source = "live+snapshot"
+    elif live_data:
+        source = "live"
+    elif snapshot_node:
+        source = "snapshot"
+    else:
+        source = "none"
+
+    return {
+        "url": node_url,
+        "source": source,
+        "online": online,
+        "stale": stale,
+        "busy": busy,
+        "degraded": degraded,
+        "breaker_active": breaker_active,
+        "breaker_remaining": breaker_remaining,
+        "available_browsers": available,
+        "raw_available_browsers": raw_available,
+        "effective_capacity": effective_capacity,
+        "reserved_slots": reserved_slots,
+        "total_browsers": total_browsers,
+        "tracked_tasks": tracked_tasks,
+        "solved": solved,
+        "failed": failed,
+        "rejected_count": rejected,
+        "success_rate": success_rate,
+        "memory_mb": memory_mb,
+        "avg_solve_time": avg_solve_time,
+        "in_flight_total": in_flight_total,
+        "in_flight_prefetch": in_flight_prefetch,
+        "in_flight_direct": in_flight_direct,
+        "consecutive_failures": consecutive_failures,
+        "last_status": last_status,
+        "last_stage": last_stage,
+        "last_message": last_message,
+        "last_error": last_error,
+        "last_http_status": _safe_int(snapshot_node.get("last_http_status", 0)),
+        "last_seen_at": last_seen_at,
+    }
 
 
 # ========== 全局进程管理器 ==========
@@ -663,107 +785,210 @@ async def config_proxy_api(config: ProxyConfig):
 # ========== Solver 实时状态聚合 API ==========
 
 def _parse_token_queue_from_logs() -> dict:
-    """从注册脚本日志缓冲区中提取 Token 预热队列的最新状态"""
+    """从注册脚本日志缓冲区中提取 Token 预热队列的最新状态（兼容旧预热与新调度器日志）"""
+    import re
+
     queue_size = 0
     queue_cap = 0
     last_event = ""
-    for log_line in reversed(list(pm.log_buffer)):
-        # 匹配 "[预热] ✅ Token 已入队（队列: 1/4）"
-        if "已入队" in log_line and "队列:" in log_line:
-            import re
+    last_hint = ""
+    log_lines = list(pm.log_buffer)
+
+    for raw_line in reversed(log_lines):
+        log_line = str(raw_line or "").strip()
+        if not log_line:
+            continue
+
+        if "Token 已入队" in log_line and "队列:" in log_line:
             m = re.search(r'队列:\s*(\d+)/(\d+)', log_line)
             if m:
                 queue_size = int(m.group(1))
                 queue_cap = int(m.group(2))
-                last_event = "token_enqueued"
-                break
-        # 匹配 "从预热队列取到 Token（队列剩余: 0）"
-        elif "队列剩余:" in log_line:
-            import re
+            last_event = "token_enqueued"
+            last_hint = log_line
+            break
+
+        if "队列剩余:" in log_line and "Token" in log_line:
             m = re.search(r'队列剩余:\s*(\d+)', log_line)
             if m:
                 queue_size = int(m.group(1))
-                last_event = "token_consumed"
-                break
-        # 匹配 "预热队列 15s 无现成 Token，回退到直接请求"
-        elif "预热队列" in log_line and "回退" in log_line:
+            last_event = "token_consumed"
+            last_hint = log_line
+            break
+
+        if ("调度器预热队列" in log_line or "预热队列" in log_line) and "回退" in log_line:
             last_event = "fallback_direct"
+            last_hint = log_line
             break
-        # 匹配 "预热协程已停止"
-        elif "预热协程已停止" in log_line:
+
+        if "启动远程解题调度中心" in log_line or "启动 Token 预热队列" in log_line:
+            last_event = "prefetch_started"
+            last_hint = log_line
+            break
+
+        if "预热协程已停止" in log_line:
             last_event = "prefetch_stopped"
+            last_hint = log_line
             break
-        # 匹配 "⚡ 总并发上限: 1（1 节点 × 1 并发/节点），队列容量: 4"
-        elif "队列容量:" in log_line:
-            import re
-            m = re.search(r'队列容量:\s*(\d+)', log_line)
+
+        if "连续失败" in log_line and "退避等待" in log_line:
+            last_event = "prefetch_backoff"
+            last_hint = log_line
+            break
+
+        if "当前没有可用于 direct path 的 Solver 节点" in log_line:
+            last_event = "direct_no_candidate"
+            last_hint = log_line
+            break
+
+    if queue_cap <= 0:
+        for raw_line in reversed(log_lines):
+            log_line = str(raw_line or "").strip()
+            if "队列容量:" not in log_line and "队列:" not in log_line:
+                continue
+            m = re.search(r'队列容量:\s*(\d+)', log_line) or re.search(r'队列:\s*\d+/(\d+)', log_line)
             if m:
                 queue_cap = int(m.group(1))
-    return {"queue_size": queue_size, "queue_capacity": queue_cap, "last_event": last_event}
+                if not last_hint:
+                    last_hint = log_line
+                break
+
+    return {
+        "queue_size": queue_size,
+        "queue_capacity": queue_cap,
+        "last_event": last_event,
+        "last_hint": last_hint,
+        "source": "logs",
+    }
 
 
 @app.get("/api/solver-status")
 async def solver_status_api():
-    """聚合所有 Solver 节点的解题统计 + Token 预热队列状态"""
-    nodes = _read_remote_solver_nodes()
+    """聚合所有 Solver 节点的实时统计，并合并注册主进程输出的调度器快照。"""
+    configured_nodes = _read_remote_solver_nodes()
+    snapshot = _load_solver_cluster_snapshot()
+    snapshot_nodes = {
+        normalized: node
+        for node in snapshot.get("nodes", []) if isinstance(node, dict)
+        for normalized in [_normalize_remote_solver_node(node.get("url") or "")]
+        if normalized
+    }
+
+    merged_nodes: list[str] = []
+    for raw in configured_nodes + snapshot.get("configured_nodes", []) + list(snapshot_nodes.keys()):
+        normalized = _normalize_remote_solver_node(raw)
+        if normalized and normalized not in merged_nodes:
+            merged_nodes.append(normalized)
+
     node_statuses = []
     total_available = 0
+    total_raw_available = 0
+    total_reserved_slots = 0
+    total_tracked_tasks = 0
     total_browsers = 0
     total_solved = 0
     total_failed = 0
     total_memory = 0.0
+    busy_nodes = 0
+    breaker_nodes = 0
+    degraded_nodes = 0
 
     async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
-        for node_url in nodes:
+        for node_url in merged_nodes:
+            live_data: dict[str, Any] | None = None
+            error = ""
             try:
                 resp = await client.get(f"{node_url}/stats")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    avail = data.get("available_browsers", 0)
-                    total = data.get("total_browsers", 0)
-                    solved = data.get("total_solved", 0)
-                    failed = data.get("total_failed", 0)
-                    mem = data.get("memory_mb", 0)
-                    total_available += avail
-                    total_browsers += total
-                    total_solved += solved
-                    total_failed += failed
-                    total_memory += mem
-                    node_statuses.append({
-                        "url": node_url,
-                        "online": True,
-                        "available_browsers": avail,
-                        "total_browsers": total,
-                        "solved": solved,
-                        "failed": failed,
-                        "memory_mb": mem,
-                        "avg_solve_time": data.get("avg_solve_time", 0),
-                    })
-                else:
-                    node_statuses.append({"url": node_url, "online": False})
-            except Exception:
-                node_statuses.append({"url": node_url, "online": False})
+                if resp.status_code >= 400:
+                    raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:160]}")
+                raw_payload = resp.json()
+                live_data = raw_payload if isinstance(raw_payload, dict) else {}
+            except Exception as e:
+                error = str(e)
 
-    # 计算整体成功率
+            node_payload = _build_solver_node_status(
+                node_url=node_url,
+                live_data=live_data,
+                snapshot_node=snapshot_nodes.get(node_url),
+                error=error,
+            )
+            total_available += _safe_int(node_payload.get("available_browsers", 0))
+            total_raw_available += _safe_int(node_payload.get("raw_available_browsers", 0))
+            total_reserved_slots += _safe_int(node_payload.get("reserved_slots", 0))
+            total_tracked_tasks += _safe_int(node_payload.get("tracked_tasks", 0))
+            total_browsers += _safe_int(node_payload.get("total_browsers", 0))
+            total_solved += _safe_int(node_payload.get("solved", 0))
+            total_failed += _safe_int(node_payload.get("failed", 0))
+            total_memory += _safe_float(node_payload.get("memory_mb", 0.0))
+            busy_nodes += 1 if node_payload.get("busy") else 0
+            breaker_nodes += 1 if node_payload.get("breaker_active") else 0
+            degraded_nodes += 1 if node_payload.get("degraded") else 0
+            node_statuses.append(node_payload)
+
+    node_statuses.sort(key=lambda item: (
+        not bool(item.get("online")),
+        bool(item.get("breaker_active")),
+        bool(item.get("busy")),
+        item.get("url", ""),
+    ))
+
     total_attempts = total_solved + total_failed
-    success_rate = round(total_solved / total_attempts * 100, 1) if total_attempts > 0 else 0
+    success_rate = round(total_solved / total_attempts * 100, 1) if total_attempts > 0 else 0.0
 
-    # 从日志解析 Token 预热队列状态
-    token_queue = _parse_token_queue_from_logs()
+    log_queue = _parse_token_queue_from_logs()
+    snapshot_updated_at = _safe_float(snapshot.get("updated_at", 0.0))
+    token_queue = {
+        "source": "snapshot" if snapshot else log_queue.get("source", "logs"),
+        "running": bool(snapshot.get("running")) if snapshot else bool(pm.is_running and log_queue.get("last_event") != "prefetch_stopped"),
+        "reason": str(snapshot.get("reason") or ""),
+        "queue_target": _safe_int(snapshot.get("queue_target", 0)),
+        "queue_size": _safe_int(snapshot.get("queue_size", log_queue.get("queue_size", 0))),
+        "queue_capacity": _safe_int(snapshot.get("queue_capacity", log_queue.get("queue_capacity", 0))),
+        "hit_count": _safe_int(snapshot.get("hit_count", 0)),
+        "miss_count": _safe_int(snapshot.get("miss_count", 0)),
+        "fallback_count": _safe_int(snapshot.get("fallback_count", 0)),
+        "direct_success_count": _safe_int(snapshot.get("direct_success_count", 0)),
+        "direct_fail_count": _safe_int(snapshot.get("direct_fail_count", 0)),
+        "in_flight_prefetch_total": _safe_int(snapshot.get("in_flight_prefetch_total", 0)),
+        "in_flight_prefetch_by_node": snapshot.get("in_flight_prefetch_by_node", {}) if isinstance(snapshot.get("in_flight_prefetch_by_node", {}), dict) else {},
+        "last_fill_at": _safe_float(snapshot.get("last_fill_at", 0.0)),
+        "last_consume_at": _safe_float(snapshot.get("last_consume_at", 0.0)),
+        "last_event": str(log_queue.get("last_event") or ("snapshot_only" if snapshot else "")),
+        "last_hint": str(log_queue.get("last_hint") or snapshot.get("reason") or ""),
+        "updated_at": snapshot_updated_at,
+        "freshness_sec": round(max(time.time() - snapshot_updated_at, 0), 1) if snapshot_updated_at > 0 else None,
+        "reserve_for_direct": _safe_int(snapshot.get("reserve_for_direct", 0)),
+        "per_node_prefetch": _safe_int(snapshot.get("per_node_prefetch", 0)),
+        "max_queue_target": _safe_int(snapshot.get("max_queue_target", snapshot.get("queue_capacity", 0))),
+        "prefetch_sitekey": str(snapshot.get("prefetch_sitekey") or ""),
+        "snapshot_available": bool(snapshot),
+    }
+    if token_queue["queue_target"] <= 0:
+        token_queue["queue_target"] = max(token_queue["queue_capacity"] - token_queue["reserve_for_direct"], 0)
 
     return {
         "mode": "remote_api_only",
-        "configured": len(nodes) > 0,
+        "source": "remote_api_snapshot",
+        "configured": len(merged_nodes) > 0,
+        "running": bool(token_queue.get("running")),
+        "reason": token_queue.get("reason", ""),
+        "updated_at": snapshot_updated_at,
         "nodes": node_statuses,
         "summary": {
-            "total_nodes": len(nodes),
+            "total_nodes": len(merged_nodes),
             "online_nodes": sum(1 for n in node_statuses if n.get("online")),
             "available_browsers": total_available,
+            "raw_available_browsers": total_raw_available,
+            "reserved_slots": total_reserved_slots,
+            "tracked_tasks": total_tracked_tasks,
             "total_browsers": total_browsers,
             "total_solved": total_solved,
             "total_failed": total_failed,
             "success_rate": success_rate,
             "total_memory_mb": round(total_memory, 1),
+            "busy_nodes": busy_nodes,
+            "breaker_nodes": breaker_nodes,
+            "degraded_nodes": degraded_nodes,
         },
         "token_queue": token_queue,
     }
