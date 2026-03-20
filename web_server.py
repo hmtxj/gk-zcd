@@ -217,6 +217,27 @@ def _build_solver_node_status(
     success_attempts = solved + failed
     success_rate = round((solved / success_attempts * 100), 1) if success_attempts > 0 else round(_safe_float(snapshot_node.get("success_rate", 0.0)) * 100, 1)
 
+    node_id = str(live_data.get("node_id") or snapshot_node.get("node_id") or "")
+    node_label = str(live_data.get("node_label") or snapshot_node.get("node_label") or node_id or node_url)
+    boot_id = str(live_data.get("boot_id") or snapshot_node.get("boot_id") or "")
+    started_at = _safe_float(live_data.get("started_at", snapshot_node.get("started_at", 0.0)))
+    uptime_seconds = round(_safe_float(live_data.get("uptime_seconds", snapshot_node.get("uptime_seconds", 0.0))), 3)
+    init_count = _safe_int(live_data.get("init_count", snapshot_node.get("init_count", 0)))
+    last_init_at = _safe_float(live_data.get("last_init_at", snapshot_node.get("last_init_at", 0.0)))
+    last_init_reason = str(live_data.get("last_init_reason") or snapshot_node.get("last_init_reason") or "")
+    last_init_result = str(live_data.get("last_init_result") or snapshot_node.get("last_init_result") or "")
+    last_reinit_requested_by = str(live_data.get("last_reinit_requested_by") or snapshot_node.get("last_reinit_requested_by") or "")
+    last_reinit_source = str(live_data.get("last_reinit_source") or snapshot_node.get("last_reinit_source") or "")
+    last_reinit_request_at = _safe_float(live_data.get("last_reinit_request_at", snapshot_node.get("last_reinit_request_at", 0.0)))
+    last_reinit_finished_at = _safe_float(live_data.get("last_reinit_finished_at", snapshot_node.get("last_reinit_finished_at", 0.0)))
+    last_reinit_error = str(live_data.get("last_reinit_error") or snapshot_node.get("last_reinit_error") or "")
+    last_reinit_status = str(live_data.get("last_reinit_status") or snapshot_node.get("last_reinit_status") or "")
+    last_reinit_message = str(live_data.get("last_reinit_message") or snapshot_node.get("last_reinit_message") or "")
+    reinit_in_progress = bool(live_data.get("reinit_in_progress", snapshot_node.get("reinit_in_progress", False)))
+    reinit_supported = bool(live_data.get("reinit_supported", snapshot_node.get("reinit_supported", False)))
+    reinit_cooldown_until = _safe_float(live_data.get("reinit_cooldown_until", snapshot_node.get("reinit_cooldown_until", 0.0)))
+    reinit_cooldown_remaining = round(_safe_float(live_data.get("reinit_cooldown_remaining", snapshot_node.get("reinit_cooldown_remaining", 0.0))), 3)
+
     online = bool(live_data) and not error
     last_status = str(snapshot_node.get("last_status") or ("healthy" if online else "offline"))
     last_stage = str(snapshot_node.get("last_stage") or "")
@@ -265,13 +286,14 @@ def _build_solver_node_status(
     recent_captcha_fail_count = _safe_int(live_data.get("recent_captcha_fail_count", snapshot_node.get("recent_captcha_fail_count", 0)))
     last_degraded_at = _safe_float(snapshot_node.get("last_degraded_at", 0.0))
 
-    busy = online and (available <= 0 or effective_capacity <= 0 or last_status == "busy" or health_status == "cooling")
+    busy = online and (available <= 0 or effective_capacity <= 0 or last_status == "busy" or health_status == "cooling" or reinit_in_progress)
     degraded = (
         breaker_active
         or soft_penalty_active
         or consecutive_failures > 0
         or health_status in {"degraded", "recovering", "cooling"}
         or last_status in {"failed", "timeout", "offline"}
+        or reinit_in_progress
     )
 
     if live_data and snapshot_node:
@@ -285,6 +307,11 @@ def _build_solver_node_status(
 
     return {
         "url": node_url,
+        "node_id": node_id,
+        "node_label": node_label,
+        "boot_id": boot_id,
+        "started_at": started_at,
+        "uptime_seconds": uptime_seconds,
         "source": source,
         "online": online,
         "stale": stale,
@@ -318,6 +345,21 @@ def _build_solver_node_status(
         "in_flight_prefetch": in_flight_prefetch,
         "in_flight_direct": in_flight_direct,
         "consecutive_failures": consecutive_failures,
+        "init_count": init_count,
+        "last_init_at": last_init_at,
+        "last_init_reason": last_init_reason,
+        "last_init_result": last_init_result,
+        "last_reinit_requested_by": last_reinit_requested_by,
+        "last_reinit_source": last_reinit_source,
+        "last_reinit_request_at": last_reinit_request_at,
+        "last_reinit_finished_at": last_reinit_finished_at,
+        "last_reinit_error": last_reinit_error,
+        "last_reinit_status": last_reinit_status,
+        "last_reinit_message": last_reinit_message,
+        "reinit_in_progress": reinit_in_progress,
+        "reinit_supported": reinit_supported,
+        "reinit_cooldown_until": reinit_cooldown_until,
+        "reinit_cooldown_remaining": reinit_cooldown_remaining,
         "last_status": last_status,
         "last_stage": last_stage,
         "last_message": last_message,
@@ -949,6 +991,7 @@ async def solver_status_api():
 
     snapshot_summary = snapshot.get("summary", {}) if isinstance(snapshot.get("summary", {}), dict) else {}
     snapshot_scheduler = snapshot.get("scheduler", {}) if isinstance(snapshot.get("scheduler", {}), dict) else {}
+    snapshot_reinit = snapshot.get("reinit", {}) if isinstance(snapshot.get("reinit", {}), dict) else {}
     scheduler = {
         "queue_wait_timeout": round(_safe_float(snapshot_scheduler.get("queue_wait_timeout", 0.0)), 3),
         "token_timeout": _safe_int(snapshot_scheduler.get("token_timeout", 0)),
@@ -966,6 +1009,14 @@ async def solver_status_api():
         "per_node_prefetch": _safe_int(snapshot_scheduler.get("per_node_prefetch", snapshot.get("per_node_prefetch", 0))),
         "max_queue_target": _safe_int(snapshot_scheduler.get("max_queue_target", snapshot.get("max_queue_target", snapshot.get("queue_capacity", 0)))),
         "queue_capacity": _safe_int(snapshot_scheduler.get("queue_capacity", snapshot.get("queue_capacity", 0))),
+        "admin_configured": bool(snapshot_scheduler.get("admin_configured", snapshot_reinit.get("admin_configured", False))),
+        "reinit_enabled": bool(snapshot_scheduler.get("reinit_enabled", snapshot_reinit.get("enabled", False))),
+        "reinit_trigger_streak": _safe_int(snapshot_scheduler.get("reinit_trigger_streak", snapshot_reinit.get("trigger_streak", 0))),
+        "reinit_cooldown_seconds": round(_safe_float(snapshot_scheduler.get("reinit_cooldown_seconds", snapshot_reinit.get("cooldown_seconds", 0.0))), 3),
+        "reinit_request_timeout": round(_safe_float(snapshot_scheduler.get("reinit_request_timeout", snapshot_reinit.get("request_timeout", 0.0))), 3),
+        "reinit_max_targets": _safe_int(snapshot_scheduler.get("reinit_max_targets", snapshot_reinit.get("max_targets", 0))),
+        "reinit_allow_broadcast": bool(snapshot_scheduler.get("reinit_allow_broadcast", snapshot_reinit.get("allow_broadcast", False))),
+        "reinit_requested_by": str(snapshot_scheduler.get("reinit_requested_by", snapshot_reinit.get("requested_by", "")) or ""),
     }
 
     async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
@@ -1041,6 +1092,7 @@ async def solver_status_api():
     breaker_nodes = sum(1 for n in node_statuses if n.get("breaker_active"))
     busy_nodes = sum(1 for n in node_statuses if n.get("busy"))
     degraded_nodes = sum(1 for n in node_statuses if n.get("degraded"))
+    reinitializing_nodes = sum(1 for n in node_statuses if n.get("reinit_in_progress"))
     direct_ready_nodes = sum(1 for n in node_statuses if _node_direct_ready(n))
     prefetch_ready_nodes = sum(1 for n in node_statuses if _node_prefetch_ready(n))
     online_health_scores = [_safe_int(n.get("health_score", 0)) for n in node_statuses if n.get("online")]
@@ -1060,6 +1112,10 @@ async def solver_status_api():
         "fallback_count": _safe_int(snapshot.get("fallback_count", 0)),
         "direct_success_count": _safe_int(snapshot.get("direct_success_count", 0)),
         "direct_fail_count": _safe_int(snapshot.get("direct_fail_count", 0)),
+        "direct_unavailable_streak": _safe_int(snapshot.get("direct_unavailable_streak", 0)),
+        "last_direct_unavailable_at": _safe_float(snapshot.get("last_direct_unavailable_at", 0.0)),
+        "last_direct_unavailable_summary": str(snapshot.get("last_direct_unavailable_summary") or ""),
+        "last_token_success_at": _safe_float(snapshot.get("last_token_success_at", 0.0)),
         "in_flight_prefetch_total": _safe_int(snapshot.get("in_flight_prefetch_total", 0)),
         "in_flight_prefetch_by_node": snapshot.get("in_flight_prefetch_by_node", {}) if isinstance(snapshot.get("in_flight_prefetch_by_node", {}), dict) else {},
         "last_fill_at": _safe_float(snapshot.get("last_fill_at", 0.0)),
@@ -1077,6 +1133,28 @@ async def solver_status_api():
     if token_queue["queue_target"] <= 0:
         token_queue["queue_target"] = max(token_queue["queue_capacity"] - token_queue["reserve_for_direct"], 0)
 
+    reinit = {
+        "enabled": bool(snapshot_reinit.get("enabled", scheduler.get("reinit_enabled", False))),
+        "admin_configured": bool(snapshot_reinit.get("admin_configured", scheduler.get("admin_configured", False))),
+        "trigger_streak": _safe_int(snapshot_reinit.get("trigger_streak", scheduler.get("reinit_trigger_streak", 0))),
+        "cooldown_seconds": round(_safe_float(snapshot_reinit.get("cooldown_seconds", scheduler.get("reinit_cooldown_seconds", 0.0))), 3),
+        "cooldown_remaining": round(_safe_float(snapshot_reinit.get("cooldown_remaining", 0.0)), 3),
+        "request_timeout": round(_safe_float(snapshot_reinit.get("request_timeout", scheduler.get("reinit_request_timeout", 0.0))), 3),
+        "max_targets": _safe_int(snapshot_reinit.get("max_targets", scheduler.get("reinit_max_targets", 0))),
+        "allow_broadcast": bool(snapshot_reinit.get("allow_broadcast", scheduler.get("reinit_allow_broadcast", False))),
+        "requested_by": str(snapshot_reinit.get("requested_by", scheduler.get("reinit_requested_by", "")) or ""),
+        "last_reinit_at": _safe_float(snapshot_reinit.get("last_reinit_at", 0.0)),
+        "last_reinit_reason": str(snapshot_reinit.get("last_reinit_reason") or ""),
+        "last_reinit_targets": snapshot_reinit.get("last_reinit_targets", []) if isinstance(snapshot_reinit.get("last_reinit_targets", []), list) else [],
+        "last_reinit_results": snapshot_reinit.get("last_reinit_results", []) if isinstance(snapshot_reinit.get("last_reinit_results", []), list) else [],
+        "last_reinit_summary": str(snapshot_reinit.get("last_reinit_summary") or ""),
+        "last_reinit_trigger_streak": _safe_int(snapshot_reinit.get("last_reinit_trigger_streak", 0)),
+        "attempt_count": _safe_int(snapshot_reinit.get("attempt_count", 0)),
+        "success_count": _safe_int(snapshot_reinit.get("success_count", 0)),
+        "fail_count": _safe_int(snapshot_reinit.get("fail_count", 0)),
+        "skip_count": _safe_int(snapshot_reinit.get("skip_count", 0)),
+    }
+
     summary = {
         "total_nodes": len(merged_nodes),
         "online_nodes": online_nodes,
@@ -1086,6 +1164,7 @@ async def solver_status_api():
         "soft_penalty_nodes": _safe_int(snapshot_summary.get("soft_penalty_nodes", soft_penalty_nodes)),
         "breaker_nodes": _safe_int(snapshot_summary.get("breaker_nodes", breaker_nodes)),
         "busy_nodes": _safe_int(snapshot_summary.get("busy_nodes", busy_nodes)),
+        "reinitializing_nodes": reinitializing_nodes,
         "direct_ready_nodes": _safe_int(snapshot_summary.get("direct_ready_nodes", direct_ready_nodes)),
         "prefetch_ready_nodes": _safe_int(snapshot_summary.get("prefetch_ready_nodes", prefetch_ready_nodes)),
         "avg_health_score": round(_safe_float(snapshot_summary.get("avg_health_score", avg_health_score)), 3),
@@ -1112,6 +1191,7 @@ async def solver_status_api():
         "summary": summary,
         "token_queue": token_queue,
         "scheduler": scheduler,
+        "reinit": reinit,
     }
 
 

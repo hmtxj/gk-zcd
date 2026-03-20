@@ -144,6 +144,17 @@ def _get_env_float(name: str, default: float, minimum: float | None = None, maxi
     return value
 
 
+def _get_env_bool(name: str, default: bool = False) -> bool:
+    raw = str(os.environ.get(name, "")).strip().lower()
+    if not raw:
+        return bool(default)
+    if raw in {"1", "true", "yes", "on", "y"}:
+        return True
+    if raw in {"0", "false", "no", "off", "n"}:
+        return False
+    return bool(default)
+
+
 SOLVER_QUEUE_WAIT_TIMEOUT = _get_env_float("SOLVER_QUEUE_WAIT_TIMEOUT", 5.0, minimum=0.5)
 SOLVER_DIRECT_TIMEOUT = _get_env_int("SOLVER_DIRECT_TIMEOUT", 90, minimum=10)
 SOLVER_DIRECT_ATTEMPTS = _get_env_int("SOLVER_DIRECT_ATTEMPTS", 2, minimum=1, maximum=5)
@@ -157,6 +168,14 @@ SOLVER_DIRECT_MIN_HEALTH_SCORE = _get_env_int("SOLVER_DIRECT_MIN_HEALTH_SCORE", 
 SOLVER_RECOVERING_OBSERVE_SECONDS = _get_env_float("SOLVER_RECOVERING_OBSERVE_SECONDS", 10.0, minimum=1.0)
 SOLVER_RESERVE_FOR_DIRECT = _get_env_int("SOLVER_RESERVE_FOR_DIRECT", 1, minimum=0, maximum=4)
 SOLVER_PER_NODE_PREFETCH = _get_env_int("SOLVER_PER_NODE_PREFETCH", 1, minimum=1, maximum=4)
+SOLVER_ADMIN_TOKEN = os.environ.get("SOLVER_ADMIN_TOKEN", "").strip()
+SOLVER_REINIT_ENABLED = _get_env_bool("SOLVER_REINIT_ENABLED", True)
+SOLVER_REINIT_TRIGGER_STREAK = _get_env_int("SOLVER_REINIT_TRIGGER_STREAK", 2, minimum=1, maximum=10)
+SOLVER_REINIT_COOLDOWN_SECONDS = _get_env_float("SOLVER_REINIT_COOLDOWN_SECONDS", 120.0, minimum=1.0)
+SOLVER_REINIT_REQUEST_TIMEOUT = _get_env_float("SOLVER_REINIT_REQUEST_TIMEOUT", 20.0, minimum=3.0)
+SOLVER_REINIT_MAX_TARGETS = _get_env_int("SOLVER_REINIT_MAX_TARGETS", 2, minimum=1, maximum=20)
+SOLVER_REINIT_ALLOW_BROADCAST = _get_env_bool("SOLVER_REINIT_ALLOW_BROADCAST", False)
+SOLVER_REINIT_REQUESTED_BY = os.environ.get("SOLVER_REINIT_REQUESTED_BY", "register-cluster").strip() or "register-cluster"
 
 # 持久化文件路径（以脚本所在目录为基准，运行时数据写入 data/ 子目录）
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -232,6 +251,14 @@ def _build_solver_scheduler_config(queue_capacity: int = 0) -> dict[str, object]
         "per_node_prefetch": SOLVER_PER_NODE_PREFETCH,
         "queue_capacity": normalized_queue_capacity,
         "max_queue_target": normalized_queue_capacity,
+        "admin_configured": bool(SOLVER_ADMIN_TOKEN),
+        "reinit_enabled": SOLVER_REINIT_ENABLED,
+        "reinit_trigger_streak": SOLVER_REINIT_TRIGGER_STREAK,
+        "reinit_cooldown_seconds": round(SOLVER_REINIT_COOLDOWN_SECONDS, 3),
+        "reinit_request_timeout": round(SOLVER_REINIT_REQUEST_TIMEOUT, 3),
+        "reinit_max_targets": SOLVER_REINIT_MAX_TARGETS,
+        "reinit_allow_broadcast": SOLVER_REINIT_ALLOW_BROADCAST,
+        "reinit_requested_by": SOLVER_REINIT_REQUESTED_BY,
     }
 
 
@@ -254,10 +281,35 @@ def _build_solver_status_base(reason: str = "", running: bool = False, queue_cap
         "in_flight_prefetch_by_node": {},
         "last_fill_at": 0.0,
         "last_consume_at": 0.0,
+        "direct_unavailable_streak": 0,
+        "last_direct_unavailable_at": 0.0,
+        "last_direct_unavailable_summary": "",
+        "last_token_success_at": 0.0,
         "reserve_for_direct": SOLVER_RESERVE_FOR_DIRECT,
         "per_node_prefetch": SOLVER_PER_NODE_PREFETCH,
         "max_queue_target": normalized_queue_capacity,
         "prefetch_sitekey": "",
+        "reinit": {
+            "enabled": SOLVER_REINIT_ENABLED,
+            "admin_configured": bool(SOLVER_ADMIN_TOKEN),
+            "trigger_streak": SOLVER_REINIT_TRIGGER_STREAK,
+            "cooldown_seconds": round(SOLVER_REINIT_COOLDOWN_SECONDS, 3),
+            "cooldown_remaining": 0.0,
+            "request_timeout": round(SOLVER_REINIT_REQUEST_TIMEOUT, 3),
+            "max_targets": SOLVER_REINIT_MAX_TARGETS,
+            "allow_broadcast": SOLVER_REINIT_ALLOW_BROADCAST,
+            "requested_by": SOLVER_REINIT_REQUESTED_BY,
+            "last_reinit_at": 0.0,
+            "last_reinit_reason": "",
+            "last_reinit_targets": [],
+            "last_reinit_results": [],
+            "last_reinit_summary": "",
+            "last_reinit_trigger_streak": 0,
+            "attempt_count": 0,
+            "success_count": 0,
+            "fail_count": 0,
+            "skip_count": 0,
+        },
         "summary": _build_solver_summary_base(),
         "scheduler": _build_solver_scheduler_config(queue_capacity=normalized_queue_capacity),
         "nodes": [],
@@ -331,6 +383,14 @@ async def _capture_solver_status_snapshot(sitekey: str = "", running: bool | Non
                 "per_node_prefetch": int(getattr(solver_cluster, "_per_node_prefetch", SOLVER_PER_NODE_PREFETCH) or SOLVER_PER_NODE_PREFETCH),
                 "max_queue_target": int(getattr(solver_cluster, "_max_queue_target", snapshot.get("queue_capacity", 0)) or 0),
                 "queue_capacity": int(getattr(solver_cluster, "queue_capacity", snapshot.get("queue_capacity", 0)) or 0),
+                "admin_configured": bool(getattr(solver_cluster, "admin_token", "")),
+                "reinit_enabled": bool(getattr(solver_cluster, "reinit_enabled", SOLVER_REINIT_ENABLED)),
+                "reinit_trigger_streak": int(getattr(solver_cluster, "reinit_trigger_streak", SOLVER_REINIT_TRIGGER_STREAK) or SOLVER_REINIT_TRIGGER_STREAK),
+                "reinit_cooldown_seconds": round(float(getattr(solver_cluster, "reinit_cooldown_seconds", SOLVER_REINIT_COOLDOWN_SECONDS) or 0), 3),
+                "reinit_request_timeout": round(float(getattr(solver_cluster, "reinit_request_timeout", SOLVER_REINIT_REQUEST_TIMEOUT) or 0), 3),
+                "reinit_max_targets": int(getattr(solver_cluster, "reinit_max_targets", SOLVER_REINIT_MAX_TARGETS) or SOLVER_REINIT_MAX_TARGETS),
+                "reinit_allow_broadcast": bool(getattr(solver_cluster, "reinit_allow_broadcast", SOLVER_REINIT_ALLOW_BROADCAST)),
+                "reinit_requested_by": str(getattr(solver_cluster, "reinit_requested_by", SOLVER_REINIT_REQUESTED_BY) or SOLVER_REINIT_REQUESTED_BY),
             }
         )
     snapshot["scheduler"] = scheduler
@@ -1461,6 +1521,9 @@ async def batch_register(count: int = 1, concurrency: int = 5):
                     initial_sitekey = DEFAULT_SITE_KEY
                     print(f"  ⚠️ 预热获取 Sitekey 失败 ({e})，回退默认 Sitekey")
 
+                if SOLVER_REINIT_ENABLED and not SOLVER_ADMIN_TOKEN:
+                    print("  ⚠️ [节点自愈] 已开启定向软初始化，但未配置 SOLVER_ADMIN_TOKEN；达到阈值时将自动跳过远程重置")
+
                 # 启动远程解题调度中心：统一管理预热与 direct path
                 solver_cluster = RemoteSolverCluster(
                     http_client=http_client,
@@ -1476,6 +1539,14 @@ async def batch_register(count: int = 1, concurrency: int = 5):
                     prefetch_min_health_score=SOLVER_PREFETCH_MIN_HEALTH_SCORE,
                     direct_min_health_score=SOLVER_DIRECT_MIN_HEALTH_SCORE,
                     recovering_observe_seconds=SOLVER_RECOVERING_OBSERVE_SECONDS,
+                    admin_token=SOLVER_ADMIN_TOKEN,
+                    reinit_enabled=SOLVER_REINIT_ENABLED,
+                    reinit_trigger_streak=SOLVER_REINIT_TRIGGER_STREAK,
+                    reinit_cooldown_seconds=SOLVER_REINIT_COOLDOWN_SECONDS,
+                    reinit_request_timeout=SOLVER_REINIT_REQUEST_TIMEOUT,
+                    reinit_max_targets=SOLVER_REINIT_MAX_TARGETS,
+                    reinit_allow_broadcast=SOLVER_REINIT_ALLOW_BROADCAST,
+                    reinit_requested_by=SOLVER_REINIT_REQUESTED_BY,
                 )
                 token_queue = solver_cluster.token_queue
                 _prefetch_stop = solver_cluster._prefetch_stop
