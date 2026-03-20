@@ -16,6 +16,10 @@ DEFAULT_POLL_INTERVAL = 2.0
 DEFAULT_BREAKER_SECONDS = 15.0
 DEFAULT_BREAKER_THRESHOLD = 2
 DEFAULT_TOKEN_MAX_AGE = 110.0
+DEFAULT_SOFT_PENALTY_SECONDS = 20.0
+DEFAULT_PREFETCH_MIN_HEALTH_SCORE = 55
+DEFAULT_DIRECT_MIN_HEALTH_SCORE = 35
+DEFAULT_RECOVERING_OBSERVE_SECONDS = 10.0
 
 
 @dataclass
@@ -46,6 +50,15 @@ class RemoteSolverNodeState:
     fail_count: int = 0
     rejected_count: int = 0
     total_solve_time: float = 0.0
+    health_score: int = 100
+    health_status: str = "unknown"
+    degraded_reason: str = ""
+    soft_penalty_until: float = 0.0
+    recovering_until: float = 0.0
+    recent_timeout_count: int = 0
+    recent_captcha_fail_count: int = 0
+    avg_solve_time_recent: float = 0.0
+    last_degraded_at: float = 0.0
     last_error: str = ""
     last_stage: str = ""
     last_message: str = ""
@@ -79,6 +92,22 @@ class RemoteSolverNodeState:
     def effective_capacity(self) -> int:
         return max(self.available_browsers - self.in_flight_total, 0)
 
+    @property
+    def soft_penalty_active(self) -> bool:
+        return self.soft_penalty_until > time.time()
+
+    @property
+    def soft_penalty_remaining(self) -> float:
+        return max(self.soft_penalty_until - time.time(), 0.0)
+
+    @property
+    def recovering_active(self) -> bool:
+        return self.recovering_until > time.time()
+
+    @property
+    def recovering_remaining(self) -> float:
+        return max(self.recovering_until - time.time(), 0.0)
+
     def snapshot(self) -> dict[str, Any]:
         return {
             "url": self.url,
@@ -96,7 +125,20 @@ class RemoteSolverNodeState:
             "fail_count": self.fail_count,
             "rejected_count": self.rejected_count,
             "avg_solve_time": round(self.avg_solve_time, 3),
+            "avg_solve_time_recent": round(self.avg_solve_time_recent, 3),
             "success_rate": round(self.success_rate, 4),
+            "health_score": self.health_score,
+            "health_status": self.health_status,
+            "degraded_reason": self.degraded_reason,
+            "soft_penalty_until": self.soft_penalty_until,
+            "soft_penalty_active": self.soft_penalty_active,
+            "soft_penalty_remaining": round(self.soft_penalty_remaining, 3),
+            "recovering_until": self.recovering_until,
+            "recovering_active": self.recovering_active,
+            "recovering_remaining": round(self.recovering_remaining, 3),
+            "recent_timeout_count": self.recent_timeout_count,
+            "recent_captcha_fail_count": self.recent_captcha_fail_count,
+            "last_degraded_at": self.last_degraded_at,
             "last_error": self.last_error,
             "last_stage": self.last_stage,
             "last_message": self.last_message,
@@ -120,6 +162,10 @@ class RemoteSolverCluster:
         token_max_age: float = DEFAULT_TOKEN_MAX_AGE,
         breaker_seconds: float = DEFAULT_BREAKER_SECONDS,
         breaker_threshold: int = DEFAULT_BREAKER_THRESHOLD,
+        soft_penalty_seconds: float = DEFAULT_SOFT_PENALTY_SECONDS,
+        prefetch_min_health_score: int = DEFAULT_PREFETCH_MIN_HEALTH_SCORE,
+        direct_min_health_score: int = DEFAULT_DIRECT_MIN_HEALTH_SCORE,
+        recovering_observe_seconds: float = DEFAULT_RECOVERING_OBSERVE_SECONDS,
     ):
         self.http_client = http_client
         self.node_provider = node_provider
@@ -131,6 +177,10 @@ class RemoteSolverCluster:
         self.token_max_age = max(float(token_max_age), 10.0)
         self.breaker_seconds = max(float(breaker_seconds), 1.0)
         self.breaker_threshold = max(int(breaker_threshold), 1)
+        self.soft_penalty_seconds = max(float(soft_penalty_seconds), 1.0)
+        self.prefetch_min_health_score = max(min(int(prefetch_min_health_score), 100), 0)
+        self.direct_min_health_score = max(min(int(direct_min_health_score), 100), 0)
+        self.recovering_observe_seconds = max(float(recovering_observe_seconds), 1.0)
 
         self._state_lock = asyncio.Lock()
         self._prefetch_stop = asyncio.Event()
@@ -154,6 +204,76 @@ class RemoteSolverCluster:
 
     def _log(self, message: str):
         print(message)
+
+    def _derive_health_status(self, health_score: int, available_browsers: int) -> str:
+        if available_browsers <= 0:
+            return "cooling"
+        if health_score >= 80:
+            return "healthy"
+        if health_score >= 60:
+            return "warming"
+        if health_score >= self.direct_min_health_score:
+            return "recovering"
+        return "degraded"
+
+    def _candidate_unavailable_reason(self, state: RemoteSolverNodeState, request_kind: str) -> str | None:
+        if not state.online:
+            return "offline"
+        if state.breaker_active:
+            return "breaker"
+        if state.available_browsers <= 0:
+            return "no_available_browsers"
+        if state.effective_capacity <= 0:
+            return "capacity_exhausted"
+        if request_kind == "prefetch" and state.in_flight_prefetch >= self._per_node_prefetch:
+            return "prefetch_slot_full"
+        if request_kind == "prefetch" and state.health_status in {"degraded", "recovering", "cooling"}:
+            return "prefetch_suppressed_by_health"
+        if request_kind == "prefetch" and state.soft_penalty_active:
+            return "soft_penalty"
+        if request_kind == "prefetch" and state.health_score < self.prefetch_min_health_score:
+            return "health_low"
+        if request_kind == "direct" and state.health_status == "degraded" and state.health_score < self.direct_min_health_score:
+            return "health_too_low"
+        return None
+
+    def _candidate_score(self, state: RemoteSolverNodeState, request_kind: str) -> float:
+        score = float(state.health_score)
+        score += min(state.effective_capacity * 8, 24)
+        score += min(state.available_browsers * 4, 12)
+        score += state.success_rate * 10
+        if state.soft_penalty_active:
+            score -= 18
+        if state.recovering_active:
+            score -= 16 if request_kind == "prefetch" else 8
+        if state.health_status == "warming":
+            score -= 4
+        elif state.health_status == "recovering":
+            score -= 8
+        elif state.health_status == "cooling":
+            score -= 14
+        elif state.health_status == "degraded":
+            score -= 22
+        solve_time = state.avg_solve_time_recent if state.avg_solve_time_recent > 0 else state.avg_solve_time
+        if solve_time > 0:
+            score -= min(solve_time, 25)
+        score -= state.in_flight_total * 5
+        score -= state.consecutive_failures * 6
+        return score
+
+    async def _build_unavailable_summary(self, request_kind: str) -> str:
+        async with self._state_lock:
+            states = list(self._nodes.values())
+        if not states:
+            return "no_nodes"
+        reason_counts: dict[str, int] = {}
+        for state in states:
+            reason = self._candidate_unavailable_reason(state, request_kind) or "candidate"
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        parts = [f"{reason}={count}" for reason, count in sorted(reason_counts.items()) if reason != "candidate"]
+        if not parts:
+            parts.append("all_candidates_filtered_after_dispatch=1")
+        return ", ".join(parts)
 
     def _normalize_nodes(self, nodes: list[str]) -> list[str]:
         normalized = []
@@ -203,9 +323,24 @@ class RemoteSolverCluster:
                 state.reserved_slots = max(int(data.get("reserved_slots", 0) or 0), 0)
                 state.total_browsers = max(int(data.get("total_browsers", 0) or 0), 0)
                 state.tracked_tasks = max(int(data.get("tracked_tasks", 0) or 0), 0)
+                health_score = int(data.get("node_health_score", state.health_score) or 0)
+                if health_score <= 0:
+                    health_score = max(100 - (state.consecutive_failures * 12) - (state.recent_timeout_count * 6), 20)
+                state.health_score = max(min(health_score, 100), 0)
+                reported_status = str(data.get("node_health_status") or "").strip().lower()
+                state.health_status = reported_status or self._derive_health_status(state.health_score, state.available_browsers)
+                state.degraded_reason = str(data.get("node_degraded_reason") or state.degraded_reason or "")
+                state.recent_timeout_count = max(int(data.get("recent_timeout_count", state.recent_timeout_count) or 0), 0)
+                state.recent_captcha_fail_count = max(int(data.get("recent_captcha_fail_count", state.recent_captcha_fail_count) or 0), 0)
+                state.avg_solve_time_recent = round(max(float(data.get("avg_solve_seconds_recent", state.avg_solve_time_recent) or 0.0), 0.0), 3)
+                if state.health_status in {"warming", "recovering", "cooling"}:
+                    state.recovering_until = max(state.recovering_until, now + self.recovering_observe_seconds)
+                elif state.health_status == "degraded":
+                    state.soft_penalty_until = max(state.soft_penalty_until, now + self.soft_penalty_seconds)
+                    state.last_degraded_at = now
                 state.last_stage = str(data.get("last_stage") or state.last_stage or "")
-                state.last_message = str(data.get("message") or state.last_message or "")
-                state.last_status = "healthy"
+                state.last_message = str(data.get("message") or data.get("node_degraded_reason") or state.last_message or "")
+                state.last_status = state.health_status or "healthy"
                 state.last_http_status = resp.status_code
                 state.last_seen_at = now
                 state.last_error = ""
@@ -214,6 +349,9 @@ class RemoteSolverCluster:
                 state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
                 state.online = False
                 state.available_browsers = 0
+                state.health_score = 0
+                state.health_status = "offline"
+                state.degraded_reason = "stats_unreachable"
                 state.last_http_status = 0
                 state.last_error = str(e)
                 state.last_status = "offline"
@@ -283,7 +421,8 @@ class RemoteSolverCluster:
 
         candidates = await self._ranked_nodes(request_kind="direct")
         if not candidates:
-            self._log("[调度] ❌ 当前没有可用于 direct path 的 Solver 节点")
+            summary = await self._build_unavailable_summary(request_kind="direct")
+            self._log(f"[调度] ❌ 当前没有可用于 direct path 的 Solver 节点（{summary}）")
             return None
 
         self._log(f"[调度] 🚀 direct path 准备从 {len(candidates)} 个候选节点中请求 Token")
@@ -323,6 +462,9 @@ class RemoteSolverCluster:
             candidates = await self._ranked_nodes(request_kind="prefetch")
             if not candidates:
                 consecutive_fail_rounds += 1
+                if consecutive_fail_rounds in {1, 3}:
+                    summary = await self._build_unavailable_summary(request_kind="prefetch")
+                    self._log(f"  [调度预热] ⚠️ 当前没有可用于预热的节点（{summary}）")
                 await asyncio.sleep(min(max(2 ** consecutive_fail_rounds, 2), 15))
                 continue
 
@@ -384,12 +526,25 @@ class RemoteSolverCluster:
     async def _compute_queue_target(self) -> int:
         async with self._state_lock:
             states = list(self._nodes.values())
-            total_capacity = sum(max(state.available_browsers - state.in_flight_total, 0) for state in states if state.online and not state.breaker_active)
-            total_browsers = sum(max(state.total_browsers, 0) for state in states if state.online)
 
-        target = min(self._max_queue_target, max(total_capacity - self._reserve_for_direct, 0))
-        if total_browsers <= 2:
+        prefetch_ready_states = [state for state in states if self._candidate_unavailable_reason(state, "prefetch") is None]
+        direct_ready_states = [state for state in states if self._candidate_unavailable_reason(state, "direct") is None]
+        total_capacity = sum(max(state.effective_capacity, 0) for state in prefetch_ready_states)
+        total_browsers = sum(max(state.total_browsers, 0) for state in states if state.online)
+        avg_health = (
+            sum(state.health_score for state in prefetch_ready_states) / len(prefetch_ready_states)
+            if prefetch_ready_states else 0.0
+        )
+
+        reserve_for_direct = self._reserve_for_direct
+        if len(direct_ready_states) <= 1:
+            reserve_for_direct = max(reserve_for_direct, 1)
+
+        target = min(self._max_queue_target, max(total_capacity - reserve_for_direct, 0))
+        if total_browsers <= 2 or len(prefetch_ready_states) <= 1:
             target = min(target, 1)
+        elif avg_health < 75:
+            target = min(target, max(len(prefetch_ready_states), 1))
         return max(target, 0)
 
     async def _consume_prefetched_token(self, sitekey: str, wait_timeout: float) -> str | None:
@@ -438,28 +593,26 @@ class RemoteSolverCluster:
 
         candidates = []
         for state in states:
-            if not state.online:
-                continue
-            if state.breaker_active:
-                continue
-            if state.available_browsers <= 0:
-                continue
-            if request_kind == "prefetch" and state.in_flight_prefetch >= self._per_node_prefetch:
-                continue
-            if state.effective_capacity <= 0:
+            reason = self._candidate_unavailable_reason(state, request_kind)
+            if reason is not None:
                 continue
             candidates.append(state)
 
-        random.shuffle(candidates)
-        candidates.sort(
-            key=lambda state: (
+        def _sort_key(state: RemoteSolverNodeState):
+            solve_time = state.avg_solve_time_recent if state.avg_solve_time_recent > 0 else (
+                state.avg_solve_time if state.avg_solve_time > 0 else 9999
+            )
+            return (
+                -round(self._candidate_score(state, request_kind), 3),
                 -state.effective_capacity,
                 -state.available_browsers,
                 state.in_flight_total,
+                solve_time,
                 -state.success_rate,
-                state.avg_solve_time if state.avg_solve_time > 0 else 9999,
             )
-        )
+
+        random.shuffle(candidates)
+        candidates.sort(key=_sort_key)
         return [state.url for state in candidates]
 
     async def _reserve_dispatch_slot(self, node_url: str, request_kind: str) -> bool:
@@ -467,13 +620,7 @@ class RemoteSolverCluster:
             state = self._nodes.get(node_url)
             if not state:
                 return False
-            if not state.online or state.breaker_active:
-                return False
-            if state.available_browsers <= 0:
-                return False
-            if state.effective_capacity <= 0:
-                return False
-            if request_kind == "prefetch" and state.in_flight_prefetch >= self._per_node_prefetch:
+            if self._candidate_unavailable_reason(state, request_kind) is not None:
                 return False
 
             state.in_flight_total += 1
@@ -505,6 +652,18 @@ class RemoteSolverCluster:
             state.consecutive_failures = 0
             state.success_count += 1
             state.total_solve_time += max(float(solve_time), 0.0)
+            if state.avg_solve_time_recent <= 0:
+                state.avg_solve_time_recent = round(max(float(solve_time), 0.0), 3)
+            else:
+                state.avg_solve_time_recent = round((state.avg_solve_time_recent * 0.7) + (max(float(solve_time), 0.0) * 0.3), 3)
+            state.recent_timeout_count = max(state.recent_timeout_count - 1, 0)
+            state.recent_captcha_fail_count = max(state.recent_captcha_fail_count - 1, 0)
+            state.health_score = min(max(state.health_score + 8, 65), 100)
+            state.health_status = "recovering" if state.recovering_active else ("healthy" if state.health_score >= 80 else "warming")
+            if not state.soft_penalty_active or state.health_score >= 85:
+                state.soft_penalty_until = 0.0
+                if state.health_status == "healthy":
+                    state.degraded_reason = ""
             state.last_seen_at = time.time()
 
     async def _mark_node_failure(
@@ -518,6 +677,7 @@ class RemoteSolverCluster:
     ):
         async with self._state_lock:
             state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
+            now = time.time()
             state.last_status = status
             state.last_stage = stage
             state.last_message = message
@@ -525,22 +685,47 @@ class RemoteSolverCluster:
             state.last_http_status = http_status
             state.fail_count += 1
             state.consecutive_failures += 1
-            state.last_seen_at = time.time()
+            state.last_seen_at = now
+            if status == "timeout":
+                state.recent_timeout_count += 1
+                state.recent_captcha_fail_count += 1
+            elif status in {"failed", "error", "busy"}:
+                state.recent_captcha_fail_count += 1
+            penalty = 10
+            if status == "busy":
+                penalty = 8
+            elif status == "timeout":
+                penalty = 16
+            elif status == "error":
+                penalty = 18
+            state.health_score = max(state.health_score - penalty, 0)
+            state.health_status = "degraded"
+            state.degraded_reason = stage or status
+            state.last_degraded_at = now
+            state.soft_penalty_until = max(state.soft_penalty_until, now + self.soft_penalty_seconds)
             if trigger_breaker or state.consecutive_failures >= self.breaker_threshold:
-                state.breaker_until = time.time() + self.breaker_seconds
+                state.breaker_until = now + self.breaker_seconds
+                state.recovering_until = max(state.recovering_until, state.breaker_until + self.recovering_observe_seconds)
 
     async def _mark_node_rejected(self, node_url: str, status: str, stage: str, message: str, http_status: int):
         async with self._state_lock:
             state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
+            now = time.time()
             state.last_status = status
             state.last_stage = stage
             state.last_message = message
             state.last_error = message
             state.last_http_status = http_status
             state.rejected_count += 1
-            state.last_seen_at = time.time()
+            state.last_seen_at = now
+            state.health_score = max(state.health_score - (12 if http_status >= 500 else 6), 0)
+            state.health_status = "cooling" if http_status >= 500 else "recovering"
+            state.degraded_reason = stage or status
+            state.last_degraded_at = now
+            state.soft_penalty_until = max(state.soft_penalty_until, now + min(self.soft_penalty_seconds, 10.0))
             if http_status >= 500:
-                state.breaker_until = time.time() + min(self.breaker_seconds, 8.0)
+                state.breaker_until = now + min(self.breaker_seconds, 8.0)
+                state.recovering_until = max(state.recovering_until, state.breaker_until + self.recovering_observe_seconds)
 
     async def _request_token_from_node(self, node_url: str, sitekey: str, timeout: int, request_kind: str) -> str | None:
         start = time.time()
@@ -632,13 +817,34 @@ class RemoteSolverCluster:
 
     async def get_status_snapshot(self) -> dict[str, Any]:
         async with self._state_lock:
-            node_snapshots = [state.snapshot() for state in self._nodes.values()]
-            in_flight_prefetch_total = sum(state.in_flight_prefetch for state in self._nodes.values())
+            states = list(self._nodes.values())
+            node_snapshots = [state.snapshot() for state in states]
+            in_flight_prefetch_total = sum(state.in_flight_prefetch for state in states)
             in_flight_prefetch_by_node = {
                 state.url: state.in_flight_prefetch
-                for state in self._nodes.values()
+                for state in states
                 if state.in_flight_prefetch > 0
             }
+            online_nodes = sum(1 for state in states if state.online)
+            healthy_nodes = sum(1 for state in states if state.online and state.health_status == "healthy")
+            degraded_nodes = sum(1 for state in states if state.online and state.health_status == "degraded")
+            recovering_nodes = sum(
+                1
+                for state in states
+                if state.online and (state.health_status in {"warming", "recovering", "cooling"} or state.recovering_active)
+            )
+            soft_penalty_nodes = sum(1 for state in states if state.soft_penalty_active)
+            breaker_nodes = sum(1 for state in states if state.breaker_active)
+            busy_nodes = sum(
+                1 for state in states
+                if state.online and (state.available_browsers <= 0 or state.effective_capacity <= 0)
+            )
+            direct_ready_nodes = sum(1 for state in states if self._candidate_unavailable_reason(state, "direct") is None)
+            prefetch_ready_nodes = sum(1 for state in states if self._candidate_unavailable_reason(state, "prefetch") is None)
+            avg_health_score = round(
+                sum(state.health_score for state in states if state.online) / online_nodes,
+                3,
+            ) if online_nodes else 0.0
 
         return {
             "queue_target": self.last_queue_target,
@@ -653,5 +859,17 @@ class RemoteSolverCluster:
             "in_flight_prefetch_by_node": in_flight_prefetch_by_node,
             "last_fill_at": self.last_fill_at,
             "last_consume_at": self.last_consume_at,
+            "summary": {
+                "online_nodes": online_nodes,
+                "healthy_nodes": healthy_nodes,
+                "degraded_nodes": degraded_nodes,
+                "recovering_nodes": recovering_nodes,
+                "soft_penalty_nodes": soft_penalty_nodes,
+                "breaker_nodes": breaker_nodes,
+                "busy_nodes": busy_nodes,
+                "direct_ready_nodes": direct_ready_nodes,
+                "prefetch_ready_nodes": prefetch_ready_nodes,
+                "avg_health_score": avg_health_score,
+            },
             "nodes": node_snapshots,
         }

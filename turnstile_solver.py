@@ -22,6 +22,17 @@ DEFAULT_TIMEOUT = 90
 
 # 节点配置中心文件（优先读取环境变量，其次本地文件；纯远程模式不再默认回退 localhost）
 SOLVER_NODES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "solver_nodes.txt")
+_SOLVER_NODE_LOG_CACHE: dict[str, tuple[str, ...]] = {}
+
+
+def _log_solver_nodes_loaded(source: str, nodes: list[str]):
+    normalized = tuple(node.rstrip("/") for node in nodes if node)
+    if not normalized:
+        return
+    if _SOLVER_NODE_LOG_CACHE.get(source) == normalized:
+        return
+    _SOLVER_NODE_LOG_CACHE[source] = normalized
+    print(f"[Turnstile] 已加载 {len(normalized)} 个远程 Solver 节点（来源: {source}）")
 
 
 def get_solver_nodes() -> list[str]:
@@ -39,7 +50,7 @@ def get_solver_nodes() -> list[str]:
                 addr = f"http://{addr}"
             nodes.append(addr.rstrip("/"))
         if nodes:
-            print(f"[Turnstile] 从环境变量 SOLVER_NODES 读取到 {len(nodes)} 个节点")
+            _log_solver_nodes_loaded("环境变量 SOLVER_NODES", nodes)
             return nodes
 
     # 其次从本地配置文件读取
@@ -58,6 +69,7 @@ def get_solver_nodes() -> list[str]:
     remote_nodes = [n for n in nodes if "127.0.0.1" not in n.lower() and "localhost" not in n.lower()]
     if len(remote_nodes) != len(nodes):
         print(f"[Turnstile] 已过滤 {len(nodes) - len(remote_nodes)} 个本地节点，仅保留远程 Solver")
+    _log_solver_nodes_loaded("solver_nodes.txt", remote_nodes)
     return remote_nodes
 
 async def get_turnstile_token_async(

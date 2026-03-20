@@ -1210,17 +1210,31 @@
                                     <div>
                                         <span class="text-[14px] font-bold text-gray-800">🔧 Solver 与 Token 队列</span>
                                         <div class="text-[11px] text-gray-400 mt-1">
-                                            {{ solverStatus.source === 'remote_api_snapshot' ? '聚合远程 /stats + 调度器快照' : '聚合远程 Solver 状态' }}
+                                            {{ solverStatus.source === 'remote_api_snapshot' ? '聚合远程 /stats + 调度器快照' :
+                                            '聚合远程 Solver 状态' }}
                                         </div>
                                     </div>
                                     <div class="flex items-center gap-2 flex-wrap justify-end">
                                         <span class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border"
                                             :class="solverStatus.summary.online_nodes > 0 ? 'bg-[#F6FFED] text-[#52C41A] border-[#B7EB8F]' : 'bg-[#FFF2E8] text-[#FA541C] border-[#FFBB96]'">
-                                            {{ solverStatus.summary.online_nodes > 0 ? `${solverStatus.summary.online_nodes} 节点在线` : '离线' }}
+                                            {{ solverStatus.summary.online_nodes > 0 ?
+                                            `${solverStatus.summary.online_nodes} 节点在线` : '离线' }}
                                         </span>
                                         <span class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border"
                                             :class="solverStatus.running ? 'bg-sky-50 text-sky-700 border-sky-200' : 'bg-gray-100 text-gray-600 border-gray-200'">
                                             {{ solverStatus.running ? '调度中' : '已停止' }}
+                                        </span>
+                                        <span class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border"
+                                            :class="Number(solverStatus.summary.avg_health_score || 0) >= 80 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : (Number(solverStatus.summary.avg_health_score || 0) >= 60 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-rose-50 text-rose-700 border-rose-200')">
+                                            健康均值 {{ Number(solverStatus.summary.avg_health_score || 0).toFixed(1) }}
+                                        </span>
+                                        <span v-if="solverStatus.summary.recovering_nodes > 0"
+                                            class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border bg-violet-50 text-violet-700 border-violet-200">
+                                            恢复中 {{ solverStatus.summary.recovering_nodes }}
+                                        </span>
+                                        <span v-if="solverStatus.summary.soft_penalty_nodes > 0"
+                                            class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200">
+                                            软惩罚 {{ solverStatus.summary.soft_penalty_nodes }}
                                         </span>
                                         <span v-if="solverStatus.summary.breaker_nodes > 0"
                                             class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border bg-rose-50 text-rose-700 border-rose-200">
@@ -1233,22 +1247,29 @@
                                     </div>
                                 </div>
 
-                                <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                                <div class="grid grid-cols-2 xl:grid-cols-5 gap-3">
                                     <div class="bg-[#F0F9FF] rounded-lg p-3 border border-blue-100">
                                         <div class="text-[11px] text-blue-500 font-medium mb-1">有效容量</div>
                                         <div class="text-[22px] font-bold text-blue-700 leading-none">
                                             {{ solverStatus.summary.available_browsers }}<span
-                                                class="text-[13px] font-normal text-blue-400">/{{ solverStatus.summary.total_browsers }}</span>
+                                                class="text-[13px] font-normal text-blue-400">/{{
+                                                solverStatus.summary.total_browsers }}</span>
                                         </div>
-                                        <div class="text-[11px] text-blue-400 mt-2">raw {{ solverStatus.summary.raw_available_browsers }} · reserve {{ solverStatus.summary.reserved_slots }}</div>
+                                        <div class="text-[11px] text-blue-400 mt-2">raw {{
+                                            solverStatus.summary.raw_available_browsers }} · reserve {{
+                                            solverStatus.summary.reserved_slots }}</div>
                                     </div>
                                     <div class="bg-[#F0FFF4] rounded-lg p-3 border border-green-100">
                                         <div class="text-[11px] text-green-500 font-medium mb-1">预热队列</div>
                                         <div class="text-[22px] font-bold text-green-700 leading-none">
                                             {{ solverStatus.token_queue.queue_size }}<span
-                                                class="text-[13px] font-normal text-green-400">/{{ solverStatus.token_queue.queue_target || solverStatus.token_queue.queue_capacity || '?' }}</span>
+                                                class="text-[13px] font-normal text-green-400">/{{
+                                                solverStatus.token_queue.queue_target ||
+                                                solverStatus.token_queue.queue_capacity || '?' }}</span>
                                         </div>
-                                        <div class="text-[11px] text-green-400 mt-2">容量 {{ solverStatus.token_queue.queue_capacity || 0 }} · 预留直连 {{ solverStatus.token_queue.reserve_for_direct || 0 }}</div>
+                                        <div class="text-[11px] text-green-400 mt-2">容量 {{
+                                            solverStatus.token_queue.queue_capacity || 0 }} · 预留直连 {{
+                                            solverStatus.token_queue.reserve_for_direct || 0 }}</div>
                                     </div>
                                     <div class="rounded-lg p-3 border"
                                         :class="solverStatus.summary.success_rate >= 50 ? 'bg-[#F0FFF4] border-green-100' : 'bg-[#FFF7ED] border-orange-100'">
@@ -1262,7 +1283,23 @@
                                         </div>
                                         <div class="text-[11px] mt-2"
                                             :class="solverStatus.summary.success_rate >= 50 ? 'text-green-400' : 'text-orange-400'">
-                                            ✓{{ solverStatus.summary.total_solved }} / ✗{{ solverStatus.summary.total_failed }}
+                                            ✓{{ solverStatus.summary.total_solved }} / ✗{{
+                                            solverStatus.summary.total_failed }}
+                                        </div>
+                                    </div>
+                                    <div class="rounded-lg p-3 border"
+                                        :class="Number(solverStatus.summary.avg_health_score || 0) >= 80 ? 'bg-emerald-50 border-emerald-100' : (Number(solverStatus.summary.avg_health_score || 0) >= 60 ? 'bg-amber-50 border-amber-100' : 'bg-rose-50 border-rose-100')">
+                                        <div class="text-[11px] font-medium mb-1"
+                                            :class="Number(solverStatus.summary.avg_health_score || 0) >= 80 ? 'text-emerald-500' : (Number(solverStatus.summary.avg_health_score || 0) >= 60 ? 'text-amber-500' : 'text-rose-500')">
+                                            平均健康分</div>
+                                        <div class="text-[22px] font-bold leading-none"
+                                            :class="Number(solverStatus.summary.avg_health_score || 0) >= 80 ? 'text-emerald-700' : (Number(solverStatus.summary.avg_health_score || 0) >= 60 ? 'text-amber-700' : 'text-rose-700')">
+                                            {{ Number(solverStatus.summary.avg_health_score || 0).toFixed(1) }}
+                                        </div>
+                                        <div class="text-[11px] mt-2"
+                                            :class="Number(solverStatus.summary.avg_health_score || 0) >= 80 ? 'text-emerald-400' : (Number(solverStatus.summary.avg_health_score || 0) >= 60 ? 'text-amber-400' : 'text-rose-400')">
+                                            ready D{{ solverStatus.summary.direct_ready_nodes || 0 }} · P{{
+                                            solverStatus.summary.prefetch_ready_nodes || 0 }}
                                         </div>
                                     </div>
                                     <div class="bg-[#F5F3FF] rounded-lg p-3 border border-purple-100">
@@ -1272,7 +1309,10 @@
                                             <span class="text-gray-300 mx-1">/</span>
                                             M{{ solverStatus.token_queue.miss_count || 0 }}
                                         </div>
-                                        <div class="text-[11px] text-purple-400 mt-2">fallback {{ solverStatus.token_queue.fallback_count || 0 }} · direct ✓{{ solverStatus.token_queue.direct_success_count || 0 }} / ✗{{ solverStatus.token_queue.direct_fail_count || 0 }}</div>
+                                        <div class="text-[11px] text-purple-400 mt-2">fallback {{
+                                            solverStatus.token_queue.fallback_count || 0 }} · direct ✓{{
+                                            solverStatus.token_queue.direct_success_count || 0 }} / ✗{{
+                                            solverStatus.token_queue.direct_fail_count || 0 }}</div>
                                     </div>
                                 </div>
 
@@ -1281,7 +1321,8 @@
                                         <div class="flex items-center justify-between gap-3 flex-wrap">
                                             <div>
                                                 <div class="text-[12px] font-semibold text-gray-700">调度器全局观测</div>
-                                                <div class="text-[11px] text-gray-400 mt-1">最后事件：{{ solverStatus.token_queue.last_event || 'idle' }}</div>
+                                                <div class="text-[11px] text-gray-400 mt-1">最后事件：{{
+                                                    solverStatus.token_queue.last_event || 'idle' }}</div>
                                             </div>
                                             <div class="text-[11px] text-gray-500 font-mono">
                                                 更新 {{ formatTimestampAge(solverStatus.token_queue.updated_at) }}
@@ -1291,47 +1332,100 @@
                                         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 text-[12px]">
                                             <div class="rounded-lg bg-white border border-gray-100 px-3 py-2">
                                                 <div class="text-gray-400">tracked</div>
-                                                <div class="font-semibold text-gray-800">{{ solverStatus.summary.tracked_tasks }}</div>
+                                                <div class="font-semibold text-gray-800">{{
+                                                    solverStatus.summary.tracked_tasks }}</div>
+                                            </div>
+                                            <div class="rounded-lg bg-white border border-gray-100 px-3 py-2">
+                                                <div class="text-gray-400">healthy</div>
+                                                <div class="font-semibold text-gray-800">{{
+                                                    solverStatus.summary.healthy_nodes || 0 }}</div>
+                                            </div>
+                                            <div class="rounded-lg bg-white border border-gray-100 px-3 py-2">
+                                                <div class="text-gray-400">recovering</div>
+                                                <div class="font-semibold text-gray-800">{{
+                                                    solverStatus.summary.recovering_nodes || 0 }}</div>
                                             </div>
                                             <div class="rounded-lg bg-white border border-gray-100 px-3 py-2">
                                                 <div class="text-gray-400">degraded</div>
-                                                <div class="font-semibold text-gray-800">{{ solverStatus.summary.degraded_nodes }}</div>
+                                                <div class="font-semibold text-gray-800">{{
+                                                    solverStatus.summary.degraded_nodes || 0 }}</div>
+                                            </div>
+                                            <div class="rounded-lg bg-white border border-gray-100 px-3 py-2">
+                                                <div class="text-gray-400">direct-ready</div>
+                                                <div class="font-semibold text-gray-800">{{
+                                                    solverStatus.summary.direct_ready_nodes || 0 }}</div>
+                                            </div>
+                                            <div class="rounded-lg bg-white border border-gray-100 px-3 py-2">
+                                                <div class="text-gray-400">prefetch-ready</div>
+                                                <div class="font-semibold text-gray-800">{{
+                                                    solverStatus.summary.prefetch_ready_nodes || 0 }}</div>
                                             </div>
                                             <div class="rounded-lg bg-white border border-gray-100 px-3 py-2">
                                                 <div class="text-gray-400">prefetch in-flight</div>
-                                                <div class="font-semibold text-gray-800">{{ solverStatus.token_queue.in_flight_prefetch_total || 0 }}</div>
+                                                <div class="font-semibold text-gray-800">{{
+                                                    solverStatus.token_queue.in_flight_prefetch_total || 0 }}</div>
                                             </div>
                                             <div class="rounded-lg bg-white border border-gray-100 px-3 py-2">
                                                 <div class="text-gray-400">目标策略</div>
-                                                <div class="font-semibold text-gray-800">{{ solverStatus.token_queue.per_node_prefetch || 0 }}/node</div>
+                                                <div class="font-semibold text-gray-800">{{
+                                                    solverStatus.token_queue.per_node_prefetch ||
+                                                    solverStatus.scheduler.per_node_prefetch || 0 }}/node</div>
                                             </div>
                                         </div>
 
                                         <div class="flex items-center gap-2">
-                                            <span class="text-[11px] text-gray-400 font-medium w-[68px] shrink-0">队列水位</span>
+                                            <span
+                                                class="text-[11px] text-gray-400 font-medium w-[68px] shrink-0">队列水位</span>
                                             <div class="flex-1 bg-gray-100 rounded-full h-[10px] overflow-hidden">
                                                 <div class="h-full rounded-full transition-all duration-200"
                                                     :class="solverStatus.token_queue.queue_size > 0 ? 'bg-gradient-to-r from-green-400 to-emerald-500' : 'bg-gray-300'"
                                                     :style="{ width: solverQueuePercent + '%' }">
                                                 </div>
                                             </div>
-                                            <span class="text-[11px] text-gray-500 font-mono w-[44px] text-right">{{ solverQueuePercent }}%</span>
+                                            <span class="text-[11px] text-gray-500 font-mono w-[44px] text-right">{{
+                                                solverQueuePercent }}%</span>
                                         </div>
 
                                         <div class="flex items-center gap-2">
-                                            <span class="text-[11px] text-gray-400 font-medium w-[68px] shrink-0">浏览器</span>
+                                            <span
+                                                class="text-[11px] text-gray-400 font-medium w-[68px] shrink-0">浏览器</span>
                                             <div class="flex items-stretch gap-[2px] flex-1 h-[14px]">
-                                                <div v-for="(segmentActive, n) in solverBrowserSegments" :key="`br-${n}`"
-                                                    class="flex-1 rounded-sm"
+                                                <div v-for="(segmentActive, n) in solverBrowserSegments"
+                                                    :key="`br-${n}`" class="flex-1 rounded-sm"
                                                     :class="segmentActive ? 'bg-[#52C41A]' : 'bg-[#FA541C]'">
                                                 </div>
                                             </div>
-                                            <span class="text-[11px] text-gray-500 font-mono w-[56px] text-right">{{ solverStatus.summary.available_browsers }}/{{ solverStatus.summary.total_browsers }}</span>
+                                            <span class="text-[11px] text-gray-500 font-mono w-[56px] text-right">{{
+                                                solverStatus.summary.available_browsers }}/{{
+                                                solverStatus.summary.total_browsers }}</span>
                                         </div>
 
-                                        <div class="rounded-lg border border-dashed border-gray-200 bg-white px-3 py-2 text-[12px] text-gray-500">
-                                            <div><span class="text-gray-400">提示：</span>{{ solverStatus.token_queue.last_hint || solverStatus.reason || '暂无新的调度提示' }}</div>
-                                            <div class="mt-1 text-gray-400">sitekey: <span class="font-mono text-gray-500">{{ solverStatus.token_queue.prefetch_sitekey || '--' }}</span></div>
+                                        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 text-[12px]">
+                                            <div
+                                                class="rounded-lg border border-dashed border-gray-200 bg-white px-3 py-2 text-gray-500">
+                                                <div><span class="text-gray-400">提示：</span>{{
+                                                    solverStatus.token_queue.last_hint || solverStatus.reason ||
+                                                    '暂无新的调度提示' }}</div>
+                                                <div class="mt-1 text-gray-400">sitekey: <span
+                                                        class="font-mono text-gray-500">{{
+                                                        solverStatus.token_queue.prefetch_sitekey || '--' }}</span>
+                                                </div>
+                                            </div>
+                                            <div
+                                                class="rounded-lg border border-dashed border-gray-200 bg-white px-3 py-2 text-gray-500">
+                                                <div><span class="text-gray-400">调度阈值：</span>direct ≥ <span
+                                                        class="font-mono text-gray-600">{{
+                                                        solverStatus.scheduler.direct_min_health_score || 0 }}</span> ·
+                                                    prefetch ≥ <span class="font-mono text-gray-600">{{
+                                                        solverStatus.scheduler.prefetch_min_health_score || 0 }}</span>
+                                                </div>
+                                                <div class="mt-1 text-gray-400">轮询 {{
+                                                    Number(solverStatus.scheduler.poll_interval || 0).toFixed(1) }}s ·
+                                                    soft penalty {{ Number(solverStatus.scheduler.soft_penalty_seconds
+                                                    || 0).toFixed(1) }}s · observe {{
+                                                    Number(solverStatus.scheduler.recovering_observe_seconds ||
+                                                    0).toFixed(1) }}s</div>
+                                            </div>
                                         </div>
                                     </div>
 
@@ -1341,48 +1435,95 @@
                                                 <div class="text-[12px] font-semibold text-gray-700">节点明细</div>
                                                 <div class="text-[11px] text-gray-400 mt-1">展示最近阶段、错误、熔断与并发占用</div>
                                             </div>
-                                            <div class="text-[11px] text-gray-400">{{ solverStatus.nodes.length }} nodes</div>
+                                            <div class="text-[11px] text-gray-400">{{ solverStatus.nodes.length }} nodes
+                                            </div>
                                         </div>
 
-                                        <div v-if="solverStatus.nodes.length === 0" class="rounded-lg border border-dashed border-gray-200 bg-white px-4 py-6 text-center text-[12px] text-gray-400">
+                                        <div v-if="solverStatus.nodes.length === 0"
+                                            class="rounded-lg border border-dashed border-gray-200 bg-white px-4 py-6 text-center text-[12px] text-gray-400">
                                             未检测到远程 Solver 节点
                                         </div>
 
-                                        <div v-else class="max-h-[340px] overflow-y-auto custom-scroll pr-1 flex flex-col gap-2">
-                                            <div v-for="node in solverStatus.nodes" :key="node.url" class="rounded-lg border bg-white px-3 py-3"
-                                                :class="node.online ? (node.breaker_active ? 'border-rose-200' : (node.busy ? 'border-amber-200' : 'border-gray-100')) : 'border-gray-200'">
+                                        <div v-else
+                                            class="max-h-[340px] overflow-y-auto custom-scroll pr-1 flex flex-col gap-2">
+                                            <div v-for="node in solverStatus.nodes" :key="node.url"
+                                                class="rounded-lg border bg-white px-3 py-3"
+                                                :class="solverNodeCardClass(node)">
                                                 <div class="flex items-start justify-between gap-3">
                                                     <div class="min-w-0">
-                                                        <div class="text-[12px] font-semibold text-gray-800 truncate">{{ node.url }}</div>
-                                                        <div class="text-[11px] text-gray-400 mt-1">{{ node.last_stage || node.last_status || (node.online ? 'healthy' : 'offline') }}</div>
+                                                        <div class="text-[12px] font-semibold text-gray-800 truncate">{{
+                                                            node.url }}</div>
+                                                        <div class="text-[11px] text-gray-400 mt-1">{{
+                                                            node.degraded_reason || node.last_stage || node.last_status
+                                                            || solverHealthText(node.health_status, node.online) }}
+                                                        </div>
                                                     </div>
-                                                    <div class="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
+                                                    <div
+                                                        class="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
                                                         <span class="text-[10px] px-2 py-0.5 rounded-full border"
                                                             :class="node.online ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-gray-100 text-gray-500 border-gray-200'">
                                                             {{ node.online ? 'online' : 'offline' }}
                                                         </span>
-                                                        <span v-if="node.busy" class="text-[10px] px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200">busy</span>
-                                                        <span v-if="node.breaker_active" class="text-[10px] px-2 py-0.5 rounded-full border bg-rose-50 text-rose-700 border-rose-200">breaker {{ Math.ceil(node.breaker_remaining || 0) }}s</span>
-                                                        <span v-if="node.stale" class="text-[10px] px-2 py-0.5 rounded-full border bg-slate-50 text-slate-600 border-slate-200">snapshot</span>
+                                                        <span class="text-[10px] px-2 py-0.5 rounded-full border"
+                                                            :class="solverHealthBadgeClass(node.health_status, node.online)">
+                                                            {{ solverHealthText(node.health_status, node.online) }}
+                                                        </span>
+                                                        <span
+                                                            class="text-[10px] px-2 py-0.5 rounded-full border bg-slate-50 text-slate-700 border-slate-200">H{{
+                                                            node.health_score || 0 }}</span>
+                                                        <span v-if="isNodeDirectReady(node)"
+                                                            class="text-[10px] px-2 py-0.5 rounded-full border bg-sky-50 text-sky-700 border-sky-200">direct-ready</span>
+                                                        <span v-if="isNodePrefetchReady(node)"
+                                                            class="text-[10px] px-2 py-0.5 rounded-full border bg-green-50 text-green-700 border-green-200">prefetch-ready</span>
+                                                        <span v-if="node.soft_penalty_active"
+                                                            class="text-[10px] px-2 py-0.5 rounded-full border bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200">soft
+                                                            {{ Math.ceil(node.soft_penalty_remaining || 0) }}s</span>
+                                                        <span v-if="node.recovering_active"
+                                                            class="text-[10px] px-2 py-0.5 rounded-full border bg-violet-50 text-violet-700 border-violet-200">recover
+                                                            {{ Math.ceil(node.recovering_remaining || 0) }}s</span>
+                                                        <span v-if="node.busy"
+                                                            class="text-[10px] px-2 py-0.5 rounded-full border bg-amber-50 text-amber-700 border-amber-200">busy</span>
+                                                        <span v-if="node.breaker_active"
+                                                            class="text-[10px] px-2 py-0.5 rounded-full border bg-rose-50 text-rose-700 border-rose-200">breaker
+                                                            {{ Math.ceil(node.breaker_remaining || 0) }}s</span>
+                                                        <span v-if="node.stale"
+                                                            class="text-[10px] px-2 py-0.5 rounded-full border bg-slate-50 text-slate-600 border-slate-200">snapshot</span>
                                                     </div>
                                                 </div>
 
-                                                <div class="grid grid-cols-2 gap-x-3 gap-y-1 mt-3 text-[11px] text-gray-500 font-mono">
-                                                    <div>cap {{ node.available_browsers }}/{{ node.total_browsers }}</div>
-                                                    <div>raw {{ node.raw_available_browsers }} · reserve {{ node.reserved_slots }}</div>
-                                                    <div>in-flight {{ node.in_flight_total }} (P{{ node.in_flight_prefetch }}/D{{ node.in_flight_direct }})</div>
-                                                    <div>tracked {{ node.tracked_tasks }} · reject {{ node.rejected_count }}</div>
+                                                <div
+                                                    class="grid grid-cols-2 gap-x-3 gap-y-1 mt-3 text-[11px] text-gray-500 font-mono">
+                                                    <div>cap {{ node.available_browsers }}/{{ node.total_browsers }}
+                                                    </div>
+                                                    <div>raw {{ node.raw_available_browsers }} · reserve {{
+                                                        node.reserved_slots }}</div>
+                                                    <div>in-flight {{ node.in_flight_total }} (P{{
+                                                        node.in_flight_prefetch }}/D{{ node.in_flight_direct }})</div>
+                                                    <div>tracked {{ node.tracked_tasks }} · reject {{
+                                                        node.rejected_count }}</div>
                                                     <div>succ {{ node.solved }} · fail {{ node.failed }}</div>
-                                                    <div>avg {{ Number(node.avg_solve_time || 0).toFixed(1) }}s · mem {{ Number(node.memory_mb || 0).toFixed(1) }}MB</div>
+                                                    <div>avg {{ Number(node.avg_solve_time || 0).toFixed(1) }}s · recent
+                                                        {{ Number(node.avg_solve_time_recent || 0).toFixed(1) }}s</div>
+                                                    <div>timeout {{ node.recent_timeout_count || 0 }} · captcha {{
+                                                        node.recent_captcha_fail_count || 0 }}</div>
+                                                    <div>mem {{ Number(node.memory_mb || 0).toFixed(1) }}MB · eff {{
+                                                        node.effective_capacity || 0 }}</div>
                                                 </div>
 
-                                                <div v-if="node.last_message || node.last_error" class="mt-3 rounded-md px-3 py-2 text-[11px]"
+                                                <div v-if="node.degraded_reason"
+                                                    class="mt-3 rounded-md px-3 py-2 text-[11px] bg-amber-50 text-amber-700 border border-amber-100">
+                                                    {{ node.degraded_reason }}
+                                                </div>
+
+                                                <div v-if="node.last_message || node.last_error"
+                                                    class="mt-3 rounded-md px-3 py-2 text-[11px]"
                                                     :class="node.last_error ? 'bg-rose-50 text-rose-700 border border-rose-100' : 'bg-slate-50 text-slate-600 border border-slate-100'">
                                                     {{ node.last_error || node.last_message }}
                                                 </div>
 
                                                 <div class="mt-2 text-[10px] text-gray-400">
-                                                    seen {{ formatTimestampAge(node.last_seen_at) }}
+                                                    seen {{ formatTimestampAge(node.last_seen_at) }} · degraded {{
+                                                    formatTimestampAge(node.last_degraded_at) }}
                                                 </div>
                                             </div>
                                         </div>
@@ -1538,19 +1679,22 @@
                         </div>
                     </header>
 
-                    <div v-if="resultsMessage"
-                        class="px-4 py-3 rounded-[14px] border text-[13px] font-medium"
+                    <div v-if="resultsMessage" class="px-4 py-3 rounded-[14px] border text-[13px] font-medium"
                         :class="resultsMessageOk ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-rose-50 border-rose-200 text-rose-600'">
                         {{ resultsMessage }}
                     </div>
 
                     <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                        <div class="bg-white rounded-[20px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] p-6">
+                        <div
+                            class="bg-white rounded-[20px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] p-6">
                             <div class="flex items-start justify-between gap-4">
                                 <div>
-                                    <div class="text-[12px] font-bold tracking-[0.18em] text-gray-400 uppercase">当前批次</div>
-                                    <div class="mt-2 text-[18px] font-bold text-gray-900">{{ resultsSummary.current_batch.batch_id || '待初始化' }}</div>
-                                    <div class="mt-1 text-[12px] text-gray-500">开始时间：{{ resultsSummary.current_batch.started_at || '暂无' }}</div>
+                                    <div class="text-[12px] font-bold tracking-[0.18em] text-gray-400 uppercase">当前批次
+                                    </div>
+                                    <div class="mt-2 text-[18px] font-bold text-gray-900">{{
+                                        resultsSummary.current_batch.batch_id || '待初始化' }}</div>
+                                    <div class="mt-1 text-[12px] text-gray-500">开始时间：{{
+                                        resultsSummary.current_batch.started_at || '暂无' }}</div>
                                 </div>
                                 <button @click="downloadResultZip('current')"
                                     :disabled="downloadLoadingKey === 'current-zip'"
@@ -1561,32 +1705,37 @@
                             <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5">
                                 <div class="rounded-[16px] border border-gray-100 bg-[#FCFCFD] px-4 py-4">
                                     <div class="text-[12px] text-gray-500">账号数</div>
-                                    <div class="mt-2 text-[22px] font-bold text-gray-900">{{ resultsSummary.current_batch.accounts_count }}</div>
+                                    <div class="mt-2 text-[22px] font-bold text-gray-900">{{
+                                        resultsSummary.current_batch.accounts_count }}</div>
                                 </div>
                                 <div class="rounded-[16px] border border-gray-100 bg-[#FCFCFD] px-4 py-4">
                                     <div class="text-[12px] text-gray-500">已开 NSFW</div>
-                                    <div class="mt-2 text-[22px] font-bold text-emerald-600">{{ resultsSummary.current_batch.key_count }}</div>
+                                    <div class="mt-2 text-[22px] font-bold text-emerald-600">{{
+                                        resultsSummary.current_batch.key_count }}</div>
                                 </div>
                                 <div class="rounded-[16px] border border-gray-100 bg-[#FCFCFD] px-4 py-4">
                                     <div class="text-[12px] text-gray-500">未开启 NSFW</div>
-                                    <div class="mt-2 text-[22px] font-bold text-amber-600">{{ resultsSummary.current_batch.nsfw_fail_count }}</div>
+                                    <div class="mt-2 text-[22px] font-bold text-amber-600">{{
+                                        resultsSummary.current_batch.nsfw_fail_count }}</div>
                                 </div>
                                 <div class="rounded-[16px] border border-gray-100 bg-[#FCFCFD] px-4 py-4">
                                     <div class="text-[12px] text-gray-500">最近更新</div>
-                                    <div class="mt-2 text-[13px] font-semibold text-gray-800 leading-5 break-all">{{ resultsSummary.current_batch.updated_at || '暂无' }}</div>
+                                    <div class="mt-2 text-[13px] font-semibold text-gray-800 leading-5 break-all">{{
+                                        resultsSummary.current_batch.updated_at || '暂无' }}</div>
                                 </div>
                             </div>
                         </div>
 
-                        <div class="bg-white rounded-[20px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] p-6">
+                        <div
+                            class="bg-white rounded-[20px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] p-6">
                             <div class="flex items-start justify-between gap-4">
                                 <div>
-                                    <div class="text-[12px] font-bold tracking-[0.18em] text-gray-400 uppercase">全量结果</div>
+                                    <div class="text-[12px] font-bold tracking-[0.18em] text-gray-400 uppercase">全量结果
+                                    </div>
                                     <div class="mt-2 text-[18px] font-bold text-gray-900">累计结果总览</div>
                                     <div class="mt-1 text-[12px] text-gray-500">适合做归档、回溯与全量备份导出</div>
                                 </div>
-                                <button @click="downloadResultZip('all')"
-                                    :disabled="downloadLoadingKey === 'all-zip'"
+                                <button @click="downloadResultZip('all')" :disabled="downloadLoadingKey === 'all-zip'"
                                     class="h-8 px-4 rounded-[16px] bg-white border border-gray-200 text-[12px] font-medium text-gray-700 hover:text-brand-blue hover:border-brand-blue transition-colors disabled:opacity-50">
                                     {{ downloadLoadingKey === 'all-zip' ? '打包中...' : '下载全量 ZIP' }}
                                 </button>
@@ -1594,26 +1743,31 @@
                             <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5">
                                 <div class="rounded-[16px] border border-gray-100 bg-[#FCFCFD] px-4 py-4">
                                     <div class="text-[12px] text-gray-500">账号总数</div>
-                                    <div class="mt-2 text-[22px] font-bold text-gray-900">{{ resultsSummary.all_time.accounts_count }}</div>
+                                    <div class="mt-2 text-[22px] font-bold text-gray-900">{{
+                                        resultsSummary.all_time.accounts_count }}</div>
                                 </div>
                                 <div class="rounded-[16px] border border-gray-100 bg-[#FCFCFD] px-4 py-4">
                                     <div class="text-[12px] text-gray-500">Key 总数</div>
-                                    <div class="mt-2 text-[22px] font-bold text-emerald-600">{{ resultsSummary.all_time.key_count }}</div>
+                                    <div class="mt-2 text-[22px] font-bold text-emerald-600">{{
+                                        resultsSummary.all_time.key_count }}</div>
                                 </div>
                                 <div class="rounded-[16px] border border-gray-100 bg-[#FCFCFD] px-4 py-4">
                                     <div class="text-[12px] text-gray-500">失败池总数</div>
-                                    <div class="mt-2 text-[22px] font-bold text-amber-600">{{ resultsSummary.all_time.nsfw_fail_count }}</div>
+                                    <div class="mt-2 text-[22px] font-bold text-amber-600">{{
+                                        resultsSummary.all_time.nsfw_fail_count }}</div>
                                 </div>
                                 <div class="rounded-[16px] border border-gray-100 bg-[#FCFCFD] px-4 py-4">
                                     <div class="text-[12px] text-gray-500">最近更新</div>
-                                    <div class="mt-2 text-[13px] font-semibold text-gray-800 leading-5 break-all">{{ resultsSummary.all_time.updated_at || '暂无' }}</div>
+                                    <div class="mt-2 text-[13px] font-semibold text-gray-800 leading-5 break-all">{{
+                                        resultsSummary.all_time.updated_at || '暂无' }}</div>
                                 </div>
                             </div>
                         </div>
                     </div>
 
                     <div class="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                        <div class="bg-white rounded-[20px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] p-6 flex flex-col gap-4">
+                        <div
+                            class="bg-white rounded-[20px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] p-6 flex flex-col gap-4">
                             <div class="flex items-center justify-between gap-3">
                                 <div>
                                     <h2 class="text-[15px] font-bold text-gray-900">当前批次文件</h2>
@@ -1624,9 +1778,11 @@
                                 <div v-for="file in resultsSummary.downloads.current" :key="'current-' + file.key"
                                     class="rounded-[18px] border border-gray-100 bg-[#FCFCFD] px-4 py-4 flex items-center justify-between gap-4">
                                     <div class="min-w-0">
-                                        <div class="text-[14px] font-bold text-gray-900 break-all">{{ file.filename }}</div>
+                                        <div class="text-[14px] font-bold text-gray-900 break-all">{{ file.filename }}
+                                        </div>
                                         <div class="mt-1 text-[12px] text-gray-500">{{ file.label }}</div>
-                                        <div class="mt-2 text-[12px] text-gray-500">{{ file.records }} 条 · {{ formatFileSize(file.size) }} · {{ file.updated_at || '暂无更新时间' }}</div>
+                                        <div class="mt-2 text-[12px] text-gray-500">{{ file.records }} 条 · {{
+                                            formatFileSize(file.size) }} · {{ file.updated_at || '暂无更新时间' }}</div>
                                     </div>
                                     <button @click="downloadResultFile('current', file.key, file.filename)"
                                         :disabled="downloadLoadingKey === 'current-' + file.key"
@@ -1637,7 +1793,8 @@
                             </div>
                         </div>
 
-                        <div class="bg-white rounded-[20px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] p-6 flex flex-col gap-4">
+                        <div
+                            class="bg-white rounded-[20px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] p-6 flex flex-col gap-4">
                             <div class="flex items-center justify-between gap-3">
                                 <div>
                                     <h2 class="text-[15px] font-bold text-gray-900">全量文件</h2>
@@ -1648,9 +1805,11 @@
                                 <div v-for="file in resultsSummary.downloads.all" :key="'all-' + file.key"
                                     class="rounded-[18px] border border-gray-100 bg-[#FCFCFD] px-4 py-4 flex items-center justify-between gap-4">
                                     <div class="min-w-0">
-                                        <div class="text-[14px] font-bold text-gray-900 break-all">{{ file.filename }}</div>
+                                        <div class="text-[14px] font-bold text-gray-900 break-all">{{ file.filename }}
+                                        </div>
                                         <div class="mt-1 text-[12px] text-gray-500">{{ file.label }}</div>
-                                        <div class="mt-2 text-[12px] text-gray-500">{{ file.records }} 条 · {{ formatFileSize(file.size) }} · {{ file.updated_at || '暂无更新时间' }}</div>
+                                        <div class="mt-2 text-[12px] text-gray-500">{{ file.records }} 条 · {{
+                                            formatFileSize(file.size) }} · {{ file.updated_at || '暂无更新时间' }}</div>
                                     </div>
                                     <button @click="downloadResultFile('all', file.key, file.filename)"
                                         :disabled="downloadLoadingKey === 'all-' + file.key"
@@ -1664,7 +1823,8 @@
 
                     <div
                         class="accounts-shell bg-white rounded-[20px] border border-gray-100 shadow-[0_2px_15px_rgba(0,0,0,0.03)] flex flex-col overflow-hidden">
-                        <div class="px-6 py-4 border-b border-gray-100 flex items-center justify-between gap-4 bg-[#FAFAFA]">
+                        <div
+                            class="px-6 py-4 border-b border-gray-100 flex items-center justify-between gap-4 bg-[#FAFAFA]">
                             <div>
                                 <h2 class="text-[14px] font-bold text-gray-700">最近结果预览</h2>
                                 <p class="text-[12px] text-gray-500 mt-1">默认只展示最近 20 条，便于抽查，不替代文件下载</p>
@@ -1706,7 +1866,8 @@
                                     </tr>
                                     <tr v-for="(item, i) in accounts" :key="i"
                                         class="hover:bg-[#F6FAFF] transition-colors group">
-                                        <td class="px-8 py-4 font-mono text-[13px] text-brand-blue font-medium break-all">
+                                        <td
+                                            class="px-8 py-4 font-mono text-[13px] text-brand-blue font-medium break-all">
                                             {{ item.email || 'N/A' }}
                                         </td>
                                         <td class="px-8 py-4 font-mono text-[13px] text-gray-500 password-cell">
@@ -2534,6 +2695,13 @@
                     summary: {
                         total_nodes: 0,
                         online_nodes: 0,
+                        healthy_nodes: 0,
+                        recovering_nodes: 0,
+                        degraded_nodes: 0,
+                        soft_penalty_nodes: 0,
+                        direct_ready_nodes: 0,
+                        prefetch_ready_nodes: 0,
+                        avg_health_score: 0,
                         available_browsers: 0,
                         raw_available_browsers: 0,
                         reserved_slots: 0,
@@ -2545,7 +2713,6 @@
                         total_memory_mb: 0,
                         busy_nodes: 0,
                         breaker_nodes: 0,
-                        degraded_nodes: 0,
                     },
                     token_queue: {
                         queue_target: 0,
@@ -2569,6 +2736,24 @@
                         max_queue_target: 0,
                         prefetch_sitekey: '',
                         snapshot_available: false,
+                    },
+                    scheduler: {
+                        queue_wait_timeout: 0,
+                        token_timeout: 0,
+                        direct_timeout: 0,
+                        direct_attempts: 0,
+                        poll_interval: 0,
+                        token_max_age: 0,
+                        breaker_seconds: 0,
+                        breaker_threshold: 0,
+                        soft_penalty_seconds: 0,
+                        prefetch_min_health_score: 55,
+                        direct_min_health_score: 35,
+                        recovering_observe_seconds: 0,
+                        reserve_for_direct: 0,
+                        per_node_prefetch: 0,
+                        max_queue_target: 0,
+                        queue_capacity: 0,
                     },
                     nodes: []
                 })
@@ -2653,6 +2838,53 @@
                         return available >= threshold
                     })
                 })
+
+                const solverHealthBadgeClass = (status, online = true) => {
+                    const normalized = String(status || '').toLowerCase()
+                    if (!online && normalized !== 'snapshot') return 'bg-gray-100 text-gray-500 border-gray-200'
+                    if (normalized === 'healthy') return 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    if (normalized === 'warming') return 'bg-sky-50 text-sky-700 border-sky-200'
+                    if (normalized === 'recovering') return 'bg-violet-50 text-violet-700 border-violet-200'
+                    if (normalized === 'cooling') return 'bg-amber-50 text-amber-700 border-amber-200'
+                    if (normalized === 'degraded') return 'bg-rose-50 text-rose-700 border-rose-200'
+                    return online ? 'bg-slate-50 text-slate-600 border-slate-200' : 'bg-gray-100 text-gray-500 border-gray-200'
+                }
+
+                const solverHealthText = (status, online = true) => {
+                    const normalized = String(status || '').toLowerCase()
+                    if (!online && !normalized) return 'offline'
+                    if (!normalized) return online ? 'unknown' : 'offline'
+                    return normalized
+                }
+
+                const solverNodeCardClass = (node) => {
+                    if (!node?.online) return 'border-gray-200'
+                    if (node?.breaker_active) return 'border-rose-200'
+                    if (node?.soft_penalty_active) return 'border-fuchsia-200'
+                    if (String(node?.health_status || '').toLowerCase() === 'degraded') return 'border-orange-200'
+                    if (node?.busy) return 'border-amber-200'
+                    return 'border-gray-100'
+                }
+
+                const isNodeDirectReady = (node) => {
+                    const scheduler = solverStatus.value.scheduler || {}
+                    return !!node?.online &&
+                        !node?.breaker_active &&
+                        Number(node?.available_browsers || 0) > 0 &&
+                        Number(node?.effective_capacity || 0) > 0 &&
+                        Number(node?.health_score || 0) >= Number(scheduler.direct_min_health_score || 0)
+                }
+
+                const isNodePrefetchReady = (node) => {
+                    const scheduler = solverStatus.value.scheduler || {}
+                    const perNodePrefetch = Number((solverStatus.value.token_queue?.per_node_prefetch ?? scheduler.per_node_prefetch) || 0)
+                    const status = String(node?.health_status || '').toLowerCase()
+                    return isNodeDirectReady(node) &&
+                        !node?.soft_penalty_active &&
+                        !['degraded', 'recovering', 'cooling'].includes(status) &&
+                        Number(node?.health_score || 0) >= Number(scheduler.prefetch_min_health_score || 0) &&
+                        (perNodePrefetch <= 0 || Number(node?.in_flight_prefetch || 0) < perNodePrefetch)
+                }
 
                 let statsTimer = null
                 let accountsTimer = null
@@ -2915,6 +3147,10 @@
                                 token_queue: {
                                     ...createDefaultSolverStatus().token_queue,
                                     ...((payload || {}).token_queue || {})
+                                },
+                                scheduler: {
+                                    ...createDefaultSolverStatus().scheduler,
+                                    ...((payload || {}).scheduler || {})
                                 },
                                 nodes: Array.isArray((payload || {}).nodes) ? payload.nodes : []
                             }
@@ -3352,7 +3588,7 @@
                     proxyPool, proxyRefreshing, fetchProxyPool, proxyRefresh, proxySwitch,
                     apiPoolUrl, directSocksUrl, activeProxyUrl, savingApi, saveProxyApi, proxyMode,
                     enableProxyPool, toggleProxyPool,
-                    solverStatus, fetchSolverStatus,
+                    solverStatus, fetchSolverStatus, solverHealthBadgeClass, solverHealthText, solverNodeCardClass, isNodeDirectReady, isNodePrefetchReady,
                     singbox, sbSubscribeUrl, sbListenPort, sbEnabled,
                     sbRefreshing, sbStarting, sbStopping, sbSaving, sbDownloading,
                     sbMessage, sbMessageOk, sbNodeActioningKey,

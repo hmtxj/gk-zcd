@@ -211,6 +211,7 @@ def _build_solver_node_status(
     breaker_remaining = round(_safe_float(snapshot_node.get("breaker_remaining", 0.0)), 3)
     last_seen_at = _safe_float(snapshot_node.get("last_seen_at", 0.0))
     avg_solve_time = round(_safe_float(live_data.get("avg_solve_time", snapshot_node.get("avg_solve_time", 0.0))), 3)
+    avg_solve_time_recent = round(_safe_float(live_data.get("avg_solve_seconds_recent", snapshot_node.get("avg_solve_time_recent", avg_solve_time))), 3)
     memory_mb = round(_safe_float(live_data.get("memory_mb", 0.0)), 1)
 
     success_attempts = solved + failed
@@ -224,9 +225,54 @@ def _build_solver_node_status(
     consecutive_failures = _safe_int(snapshot_node.get("consecutive_failures", 0))
     breaker_active = breaker_remaining > 0
     effective_capacity = max(available - in_flight_total, 0)
-    busy = online and (available <= 0 or effective_capacity <= 0 or last_status == "busy")
-    degraded = breaker_active or consecutive_failures > 0 or last_status in {"failed", "timeout", "offline"}
     stale = (not online) and bool(snapshot_node)
+
+    health_score = _safe_int(
+        live_data.get("node_health_score", snapshot_node.get("health_score", 100 if online else 0)),
+        100 if online else 0,
+    )
+    health_score = max(min(health_score, 100), 0)
+
+    health_status = str(live_data.get("node_health_status") or snapshot_node.get("health_status") or "").strip().lower()
+    if not health_status:
+        if not online:
+            health_status = "offline"
+        elif breaker_active:
+            health_status = "degraded"
+        elif available <= 0 or effective_capacity <= 0:
+            health_status = "cooling"
+        elif health_score >= 80:
+            health_status = "healthy"
+        elif health_score >= 60:
+            health_status = "warming"
+        elif health_score > 0:
+            health_status = "recovering"
+        else:
+            health_status = "degraded"
+
+    degraded_reason = str(
+        live_data.get("node_degraded_reason")
+        or snapshot_node.get("degraded_reason")
+        or last_error
+        or ""
+    ).strip()
+
+    soft_penalty_remaining = round(_safe_float(snapshot_node.get("soft_penalty_remaining", 0.0)), 3)
+    soft_penalty_active = bool(snapshot_node.get("soft_penalty_active")) or soft_penalty_remaining > 0
+    recovering_remaining = round(_safe_float(snapshot_node.get("recovering_remaining", 0.0)), 3)
+    recovering_active = bool(snapshot_node.get("recovering_active")) or recovering_remaining > 0
+    recent_timeout_count = _safe_int(live_data.get("recent_timeout_count", snapshot_node.get("recent_timeout_count", 0)))
+    recent_captcha_fail_count = _safe_int(live_data.get("recent_captcha_fail_count", snapshot_node.get("recent_captcha_fail_count", 0)))
+    last_degraded_at = _safe_float(snapshot_node.get("last_degraded_at", 0.0))
+
+    busy = online and (available <= 0 or effective_capacity <= 0 or last_status == "busy" or health_status == "cooling")
+    degraded = (
+        breaker_active
+        or soft_penalty_active
+        or consecutive_failures > 0
+        or health_status in {"degraded", "recovering", "cooling"}
+        or last_status in {"failed", "timeout", "offline"}
+    )
 
     if live_data and snapshot_node:
         source = "live+snapshot"
@@ -246,6 +292,15 @@ def _build_solver_node_status(
         "degraded": degraded,
         "breaker_active": breaker_active,
         "breaker_remaining": breaker_remaining,
+        "health_score": health_score,
+        "health_status": health_status,
+        "degraded_reason": degraded_reason,
+        "soft_penalty_active": soft_penalty_active,
+        "soft_penalty_remaining": soft_penalty_remaining,
+        "recovering_active": recovering_active,
+        "recovering_remaining": recovering_remaining,
+        "recent_timeout_count": recent_timeout_count,
+        "recent_captcha_fail_count": recent_captcha_fail_count,
         "available_browsers": available,
         "raw_available_browsers": raw_available,
         "effective_capacity": effective_capacity,
@@ -258,6 +313,7 @@ def _build_solver_node_status(
         "success_rate": success_rate,
         "memory_mb": memory_mb,
         "avg_solve_time": avg_solve_time,
+        "avg_solve_time_recent": avg_solve_time_recent,
         "in_flight_total": in_flight_total,
         "in_flight_prefetch": in_flight_prefetch,
         "in_flight_direct": in_flight_direct,
@@ -268,6 +324,7 @@ def _build_solver_node_status(
         "last_error": last_error,
         "last_http_status": _safe_int(snapshot_node.get("last_http_status", 0)),
         "last_seen_at": last_seen_at,
+        "last_degraded_at": last_degraded_at,
     }
 
 
@@ -889,9 +946,27 @@ async def solver_status_api():
     total_solved = 0
     total_failed = 0
     total_memory = 0.0
-    busy_nodes = 0
-    breaker_nodes = 0
-    degraded_nodes = 0
+
+    snapshot_summary = snapshot.get("summary", {}) if isinstance(snapshot.get("summary", {}), dict) else {}
+    snapshot_scheduler = snapshot.get("scheduler", {}) if isinstance(snapshot.get("scheduler", {}), dict) else {}
+    scheduler = {
+        "queue_wait_timeout": round(_safe_float(snapshot_scheduler.get("queue_wait_timeout", 0.0)), 3),
+        "token_timeout": _safe_int(snapshot_scheduler.get("token_timeout", 0)),
+        "direct_timeout": _safe_int(snapshot_scheduler.get("direct_timeout", snapshot_scheduler.get("token_timeout", 0))),
+        "direct_attempts": _safe_int(snapshot_scheduler.get("direct_attempts", 0)),
+        "poll_interval": round(_safe_float(snapshot_scheduler.get("poll_interval", 0.0)), 3),
+        "token_max_age": round(_safe_float(snapshot_scheduler.get("token_max_age", 0.0)), 3),
+        "breaker_seconds": round(_safe_float(snapshot_scheduler.get("breaker_seconds", 0.0)), 3),
+        "breaker_threshold": _safe_int(snapshot_scheduler.get("breaker_threshold", 0)),
+        "soft_penalty_seconds": round(_safe_float(snapshot_scheduler.get("soft_penalty_seconds", 0.0)), 3),
+        "prefetch_min_health_score": _safe_int(snapshot_scheduler.get("prefetch_min_health_score", 55), 55),
+        "direct_min_health_score": _safe_int(snapshot_scheduler.get("direct_min_health_score", 35), 35),
+        "recovering_observe_seconds": round(_safe_float(snapshot_scheduler.get("recovering_observe_seconds", 0.0)), 3),
+        "reserve_for_direct": _safe_int(snapshot_scheduler.get("reserve_for_direct", snapshot.get("reserve_for_direct", 0))),
+        "per_node_prefetch": _safe_int(snapshot_scheduler.get("per_node_prefetch", snapshot.get("per_node_prefetch", 0))),
+        "max_queue_target": _safe_int(snapshot_scheduler.get("max_queue_target", snapshot.get("max_queue_target", snapshot.get("queue_capacity", 0)))),
+        "queue_capacity": _safe_int(snapshot_scheduler.get("queue_capacity", snapshot.get("queue_capacity", 0))),
+    }
 
     async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
         for node_url in merged_nodes:
@@ -920,20 +995,56 @@ async def solver_status_api():
             total_solved += _safe_int(node_payload.get("solved", 0))
             total_failed += _safe_int(node_payload.get("failed", 0))
             total_memory += _safe_float(node_payload.get("memory_mb", 0.0))
-            busy_nodes += 1 if node_payload.get("busy") else 0
-            breaker_nodes += 1 if node_payload.get("breaker_active") else 0
-            degraded_nodes += 1 if node_payload.get("degraded") else 0
             node_statuses.append(node_payload)
+
+    direct_min_health_score = max(_safe_int(scheduler.get("direct_min_health_score", 35), 35), 0)
+    prefetch_min_health_score = max(_safe_int(scheduler.get("prefetch_min_health_score", 55), 55), 0)
+    per_node_prefetch_limit = max(_safe_int(scheduler.get("per_node_prefetch", 0)), 0)
+
+    def _node_direct_ready(item: dict[str, Any]) -> bool:
+        return (
+            bool(item.get("online"))
+            and not bool(item.get("breaker_active"))
+            and _safe_int(item.get("available_browsers", 0)) > 0
+            and _safe_int(item.get("effective_capacity", 0)) > 0
+            and _safe_int(item.get("health_score", 0)) >= direct_min_health_score
+        )
+
+    def _node_prefetch_ready(item: dict[str, Any]) -> bool:
+        health_status = str(item.get("health_status") or "").strip().lower()
+        return (
+            _node_direct_ready(item)
+            and not bool(item.get("soft_penalty_active"))
+            and health_status not in {"degraded", "recovering", "cooling"}
+            and _safe_int(item.get("health_score", 0)) >= prefetch_min_health_score
+            and (per_node_prefetch_limit <= 0 or _safe_int(item.get("in_flight_prefetch", 0)) < per_node_prefetch_limit)
+        )
 
     node_statuses.sort(key=lambda item: (
         not bool(item.get("online")),
         bool(item.get("breaker_active")),
+        bool(item.get("soft_penalty_active")),
         bool(item.get("busy")),
+        -_safe_int(item.get("health_score", 0)),
         item.get("url", ""),
     ))
 
     total_attempts = total_solved + total_failed
     success_rate = round(total_solved / total_attempts * 100, 1) if total_attempts > 0 else 0.0
+    online_nodes = sum(1 for n in node_statuses if n.get("online"))
+    healthy_nodes = sum(1 for n in node_statuses if n.get("online") and str(n.get("health_status") or "") == "healthy")
+    recovering_nodes = sum(
+        1 for n in node_statuses
+        if n.get("online") and (str(n.get("health_status") or "") in {"warming", "recovering", "cooling"} or n.get("recovering_active"))
+    )
+    soft_penalty_nodes = sum(1 for n in node_statuses if n.get("soft_penalty_active"))
+    breaker_nodes = sum(1 for n in node_statuses if n.get("breaker_active"))
+    busy_nodes = sum(1 for n in node_statuses if n.get("busy"))
+    degraded_nodes = sum(1 for n in node_statuses if n.get("degraded"))
+    direct_ready_nodes = sum(1 for n in node_statuses if _node_direct_ready(n))
+    prefetch_ready_nodes = sum(1 for n in node_statuses if _node_prefetch_ready(n))
+    online_health_scores = [_safe_int(n.get("health_score", 0)) for n in node_statuses if n.get("online")]
+    avg_health_score = round(sum(online_health_scores) / len(online_health_scores), 3) if online_health_scores else 0.0
 
     log_queue = _parse_token_queue_from_logs()
     snapshot_updated_at = _safe_float(snapshot.get("updated_at", 0.0))
@@ -943,7 +1054,7 @@ async def solver_status_api():
         "reason": str(snapshot.get("reason") or ""),
         "queue_target": _safe_int(snapshot.get("queue_target", 0)),
         "queue_size": _safe_int(snapshot.get("queue_size", log_queue.get("queue_size", 0))),
-        "queue_capacity": _safe_int(snapshot.get("queue_capacity", log_queue.get("queue_capacity", 0))),
+        "queue_capacity": _safe_int(snapshot.get("queue_capacity", log_queue.get("queue_capacity", scheduler.get("queue_capacity", 0)))),
         "hit_count": _safe_int(snapshot.get("hit_count", 0)),
         "miss_count": _safe_int(snapshot.get("miss_count", 0)),
         "fallback_count": _safe_int(snapshot.get("fallback_count", 0)),
@@ -957,40 +1068,50 @@ async def solver_status_api():
         "last_hint": str(log_queue.get("last_hint") or snapshot.get("reason") or ""),
         "updated_at": snapshot_updated_at,
         "freshness_sec": round(max(time.time() - snapshot_updated_at, 0), 1) if snapshot_updated_at > 0 else None,
-        "reserve_for_direct": _safe_int(snapshot.get("reserve_for_direct", 0)),
-        "per_node_prefetch": _safe_int(snapshot.get("per_node_prefetch", 0)),
-        "max_queue_target": _safe_int(snapshot.get("max_queue_target", snapshot.get("queue_capacity", 0))),
+        "reserve_for_direct": _safe_int(snapshot.get("reserve_for_direct", scheduler.get("reserve_for_direct", 0))),
+        "per_node_prefetch": _safe_int(snapshot.get("per_node_prefetch", scheduler.get("per_node_prefetch", 0))),
+        "max_queue_target": _safe_int(snapshot.get("max_queue_target", scheduler.get("max_queue_target", snapshot.get("queue_capacity", 0)))),
         "prefetch_sitekey": str(snapshot.get("prefetch_sitekey") or ""),
         "snapshot_available": bool(snapshot),
     }
     if token_queue["queue_target"] <= 0:
         token_queue["queue_target"] = max(token_queue["queue_capacity"] - token_queue["reserve_for_direct"], 0)
 
+    summary = {
+        "total_nodes": len(merged_nodes),
+        "online_nodes": online_nodes,
+        "healthy_nodes": _safe_int(snapshot_summary.get("healthy_nodes", healthy_nodes)),
+        "degraded_nodes": _safe_int(snapshot_summary.get("degraded_nodes", degraded_nodes)),
+        "recovering_nodes": _safe_int(snapshot_summary.get("recovering_nodes", recovering_nodes)),
+        "soft_penalty_nodes": _safe_int(snapshot_summary.get("soft_penalty_nodes", soft_penalty_nodes)),
+        "breaker_nodes": _safe_int(snapshot_summary.get("breaker_nodes", breaker_nodes)),
+        "busy_nodes": _safe_int(snapshot_summary.get("busy_nodes", busy_nodes)),
+        "direct_ready_nodes": _safe_int(snapshot_summary.get("direct_ready_nodes", direct_ready_nodes)),
+        "prefetch_ready_nodes": _safe_int(snapshot_summary.get("prefetch_ready_nodes", prefetch_ready_nodes)),
+        "avg_health_score": round(_safe_float(snapshot_summary.get("avg_health_score", avg_health_score)), 3),
+        "available_browsers": total_available,
+        "raw_available_browsers": total_raw_available,
+        "reserved_slots": total_reserved_slots,
+        "tracked_tasks": total_tracked_tasks,
+        "total_browsers": total_browsers,
+        "total_solved": total_solved,
+        "total_failed": total_failed,
+        "success_rate": success_rate,
+        "total_memory_mb": round(total_memory, 1),
+    }
+
     return {
         "mode": "remote_api_only",
         "source": "remote_api_snapshot",
         "configured": len(merged_nodes) > 0,
+        "configured_nodes": merged_nodes,
         "running": bool(token_queue.get("running")),
         "reason": token_queue.get("reason", ""),
         "updated_at": snapshot_updated_at,
         "nodes": node_statuses,
-        "summary": {
-            "total_nodes": len(merged_nodes),
-            "online_nodes": sum(1 for n in node_statuses if n.get("online")),
-            "available_browsers": total_available,
-            "raw_available_browsers": total_raw_available,
-            "reserved_slots": total_reserved_slots,
-            "tracked_tasks": total_tracked_tasks,
-            "total_browsers": total_browsers,
-            "total_solved": total_solved,
-            "total_failed": total_failed,
-            "success_rate": success_rate,
-            "total_memory_mb": round(total_memory, 1),
-            "busy_nodes": busy_nodes,
-            "breaker_nodes": breaker_nodes,
-            "degraded_nodes": degraded_nodes,
-        },
+        "summary": summary,
         "token_queue": token_queue,
+        "scheduler": scheduler,
     }
 
 

@@ -117,6 +117,47 @@ IM_MAIL_AUTH_TOKEN = os.environ.get("IM_MAIL_AUTH_TOKEN", "")
 DEFAULT_ACTION_ID = "7f182bc67c733403fbbfefe029b24a790a57b09877"
 DEFAULT_SITE_KEY = "0x4AAAAAAAhr9JGVDZbrZOo0"
 
+
+def _get_env_int(name: str, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    raw = str(os.environ.get(name, "")).strip()
+    try:
+        value = int(raw) if raw else int(default)
+    except Exception:
+        value = int(default)
+    if minimum is not None:
+        value = max(value, minimum)
+    if maximum is not None:
+        value = min(value, maximum)
+    return value
+
+
+def _get_env_float(name: str, default: float, minimum: float | None = None, maximum: float | None = None) -> float:
+    raw = str(os.environ.get(name, "")).strip()
+    try:
+        value = float(raw) if raw else float(default)
+    except Exception:
+        value = float(default)
+    if minimum is not None:
+        value = max(value, minimum)
+    if maximum is not None:
+        value = min(value, maximum)
+    return value
+
+
+SOLVER_QUEUE_WAIT_TIMEOUT = _get_env_float("SOLVER_QUEUE_WAIT_TIMEOUT", 5.0, minimum=0.5)
+SOLVER_DIRECT_TIMEOUT = _get_env_int("SOLVER_DIRECT_TIMEOUT", 90, minimum=10)
+SOLVER_DIRECT_ATTEMPTS = _get_env_int("SOLVER_DIRECT_ATTEMPTS", 2, minimum=1, maximum=5)
+SOLVER_POLL_INTERVAL = _get_env_float("SOLVER_POLL_INTERVAL", 2.0, minimum=0.2)
+SOLVER_TOKEN_MAX_AGE = _get_env_float("SOLVER_TOKEN_MAX_AGE", 110.0, minimum=10.0)
+SOLVER_BREAKER_SECONDS = _get_env_float("SOLVER_BREAKER_SECONDS", 15.0, minimum=1.0)
+SOLVER_BREAKER_THRESHOLD = _get_env_int("SOLVER_BREAKER_THRESHOLD", 2, minimum=1, maximum=10)
+SOLVER_SOFT_PENALTY_SECONDS = _get_env_float("SOLVER_SOFT_PENALTY_SECONDS", 20.0, minimum=1.0)
+SOLVER_PREFETCH_MIN_HEALTH_SCORE = _get_env_int("SOLVER_PREFETCH_MIN_HEALTH_SCORE", 55, minimum=0, maximum=100)
+SOLVER_DIRECT_MIN_HEALTH_SCORE = _get_env_int("SOLVER_DIRECT_MIN_HEALTH_SCORE", 35, minimum=0, maximum=100)
+SOLVER_RECOVERING_OBSERVE_SECONDS = _get_env_float("SOLVER_RECOVERING_OBSERVE_SECONDS", 10.0, minimum=1.0)
+SOLVER_RESERVE_FOR_DIRECT = _get_env_int("SOLVER_RESERVE_FOR_DIRECT", 1, minimum=0, maximum=4)
+SOLVER_PER_NODE_PREFETCH = _get_env_int("SOLVER_PER_NODE_PREFETCH", 1, minimum=1, maximum=4)
+
 # 持久化文件路径（以脚本所在目录为基准，运行时数据写入 data/ 子目录）
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(SCRIPT_DIR, "data")
@@ -157,7 +198,45 @@ _batch_abort: asyncio.Event | None = None
 SOLVER_STATUS_SNAPSHOT_FILE = os.path.join(DATA_DIR, "solver_cluster_status.json")
 
 
-def _build_solver_status_base(reason: str = "", running: bool = False) -> dict[str, object]:
+def _build_solver_summary_base() -> dict[str, object]:
+    return {
+        "online_nodes": 0,
+        "healthy_nodes": 0,
+        "degraded_nodes": 0,
+        "recovering_nodes": 0,
+        "soft_penalty_nodes": 0,
+        "breaker_nodes": 0,
+        "busy_nodes": 0,
+        "direct_ready_nodes": 0,
+        "prefetch_ready_nodes": 0,
+        "avg_health_score": 0.0,
+    }
+
+
+def _build_solver_scheduler_config(queue_capacity: int = 0) -> dict[str, object]:
+    normalized_queue_capacity = max(int(queue_capacity or 0), 0)
+    return {
+        "queue_wait_timeout": round(SOLVER_QUEUE_WAIT_TIMEOUT, 3),
+        "token_timeout": SOLVER_DIRECT_TIMEOUT,
+        "direct_timeout": SOLVER_DIRECT_TIMEOUT,
+        "direct_attempts": SOLVER_DIRECT_ATTEMPTS,
+        "poll_interval": round(SOLVER_POLL_INTERVAL, 3),
+        "token_max_age": round(SOLVER_TOKEN_MAX_AGE, 3),
+        "breaker_seconds": round(SOLVER_BREAKER_SECONDS, 3),
+        "breaker_threshold": SOLVER_BREAKER_THRESHOLD,
+        "soft_penalty_seconds": round(SOLVER_SOFT_PENALTY_SECONDS, 3),
+        "prefetch_min_health_score": SOLVER_PREFETCH_MIN_HEALTH_SCORE,
+        "direct_min_health_score": SOLVER_DIRECT_MIN_HEALTH_SCORE,
+        "recovering_observe_seconds": round(SOLVER_RECOVERING_OBSERVE_SECONDS, 3),
+        "reserve_for_direct": SOLVER_RESERVE_FOR_DIRECT,
+        "per_node_prefetch": SOLVER_PER_NODE_PREFETCH,
+        "queue_capacity": normalized_queue_capacity,
+        "max_queue_target": normalized_queue_capacity,
+    }
+
+
+def _build_solver_status_base(reason: str = "", running: bool = False, queue_capacity: int = 0) -> dict[str, object]:
+    normalized_queue_capacity = max(int(queue_capacity or 0), 0)
     return {
         "source": "remote_solver_cluster",
         "running": running,
@@ -165,7 +244,7 @@ def _build_solver_status_base(reason: str = "", running: bool = False) -> dict[s
         "configured_nodes": get_solver_nodes(),
         "queue_target": 0,
         "queue_size": 0,
-        "queue_capacity": 0,
+        "queue_capacity": normalized_queue_capacity,
         "hit_count": 0,
         "miss_count": 0,
         "fallback_count": 0,
@@ -175,13 +254,14 @@ def _build_solver_status_base(reason: str = "", running: bool = False) -> dict[s
         "in_flight_prefetch_by_node": {},
         "last_fill_at": 0.0,
         "last_consume_at": 0.0,
-        "reserve_for_direct": 0,
-        "per_node_prefetch": 0,
-        "max_queue_target": 0,
+        "reserve_for_direct": SOLVER_RESERVE_FOR_DIRECT,
+        "per_node_prefetch": SOLVER_PER_NODE_PREFETCH,
+        "max_queue_target": normalized_queue_capacity,
         "prefetch_sitekey": "",
+        "summary": _build_solver_summary_base(),
+        "scheduler": _build_solver_scheduler_config(queue_capacity=normalized_queue_capacity),
         "nodes": [],
     }
-
 
 def _write_solver_status_snapshot(payload: dict[str, object] | None = None):
     snapshot = dict(payload or {})
@@ -201,15 +281,21 @@ def _write_solver_status_snapshot(payload: dict[str, object] | None = None):
 
 
 async def _capture_solver_status_snapshot(sitekey: str = "", running: bool | None = None, reason: str = ""):
-    snapshot = _build_solver_status_base(reason=reason, running=False)
+    queue_capacity = 0
+    if solver_cluster is not None:
+        queue_capacity = int(getattr(solver_cluster, "queue_capacity", 0) or 0)
+    elif token_queue is not None:
+        queue_capacity = int(getattr(token_queue, "maxsize", 0) or 0)
+
+    snapshot = _build_solver_status_base(reason=reason, running=False, queue_capacity=queue_capacity)
     snapshot["configured_nodes"] = get_solver_nodes()
     snapshot["prefetch_sitekey"] = sitekey
 
     if solver_cluster is not None:
         cluster_snapshot = await solver_cluster.get_status_snapshot()
         snapshot.update(cluster_snapshot)
-        snapshot["reserve_for_direct"] = int(getattr(solver_cluster, "_reserve_for_direct", 0) or 0)
-        snapshot["per_node_prefetch"] = int(getattr(solver_cluster, "_per_node_prefetch", 0) or 0)
+        snapshot["reserve_for_direct"] = int(getattr(solver_cluster, "_reserve_for_direct", SOLVER_RESERVE_FOR_DIRECT) or 0)
+        snapshot["per_node_prefetch"] = int(getattr(solver_cluster, "_per_node_prefetch", SOLVER_PER_NODE_PREFETCH) or 0)
         snapshot["max_queue_target"] = int(getattr(solver_cluster, "_max_queue_target", snapshot.get("queue_capacity", 0)) or 0)
         snapshot["prefetch_sitekey"] = sitekey or str(getattr(solver_cluster, "_prefetch_sitekey", "") or "")
         if running is None:
@@ -218,6 +304,36 @@ async def _capture_solver_status_snapshot(sitekey: str = "", running: bool | Non
             snapshot["running"] = bool(running)
     elif running is not None:
         snapshot["running"] = bool(running)
+
+    summary = _build_solver_summary_base()
+    summary_payload = snapshot.get("summary")
+    if isinstance(summary_payload, dict):
+        summary.update(summary_payload)
+    snapshot["summary"] = summary
+
+    scheduler = _build_solver_scheduler_config(queue_capacity=int(snapshot.get("queue_capacity", 0) or 0))
+    if solver_cluster is not None:
+        scheduler.update(
+            {
+                "queue_wait_timeout": round(float(getattr(solver_cluster, "queue_wait_timeout", SOLVER_QUEUE_WAIT_TIMEOUT) or 0), 3),
+                "token_timeout": int(getattr(solver_cluster, "token_timeout", SOLVER_DIRECT_TIMEOUT) or SOLVER_DIRECT_TIMEOUT),
+                "direct_timeout": SOLVER_DIRECT_TIMEOUT,
+                "direct_attempts": SOLVER_DIRECT_ATTEMPTS,
+                "poll_interval": round(float(getattr(solver_cluster, "poll_interval", SOLVER_POLL_INTERVAL) or 0), 3),
+                "token_max_age": round(float(getattr(solver_cluster, "token_max_age", SOLVER_TOKEN_MAX_AGE) or 0), 3),
+                "breaker_seconds": round(float(getattr(solver_cluster, "breaker_seconds", SOLVER_BREAKER_SECONDS) or 0), 3),
+                "breaker_threshold": int(getattr(solver_cluster, "breaker_threshold", SOLVER_BREAKER_THRESHOLD) or SOLVER_BREAKER_THRESHOLD),
+                "soft_penalty_seconds": round(float(getattr(solver_cluster, "soft_penalty_seconds", SOLVER_SOFT_PENALTY_SECONDS) or 0), 3),
+                "prefetch_min_health_score": int(getattr(solver_cluster, "prefetch_min_health_score", SOLVER_PREFETCH_MIN_HEALTH_SCORE) or SOLVER_PREFETCH_MIN_HEALTH_SCORE),
+                "direct_min_health_score": int(getattr(solver_cluster, "direct_min_health_score", SOLVER_DIRECT_MIN_HEALTH_SCORE) or SOLVER_DIRECT_MIN_HEALTH_SCORE),
+                "recovering_observe_seconds": round(float(getattr(solver_cluster, "recovering_observe_seconds", SOLVER_RECOVERING_OBSERVE_SECONDS) or 0), 3),
+                "reserve_for_direct": int(getattr(solver_cluster, "_reserve_for_direct", SOLVER_RESERVE_FOR_DIRECT) or SOLVER_RESERVE_FOR_DIRECT),
+                "per_node_prefetch": int(getattr(solver_cluster, "_per_node_prefetch", SOLVER_PER_NODE_PREFETCH) or SOLVER_PER_NODE_PREFETCH),
+                "max_queue_target": int(getattr(solver_cluster, "_max_queue_target", snapshot.get("queue_capacity", 0)) or 0),
+                "queue_capacity": int(getattr(solver_cluster, "queue_capacity", snapshot.get("queue_capacity", 0)) or 0),
+            }
+        )
+    snapshot["scheduler"] = scheduler
 
     _write_solver_status_snapshot(snapshot)
 
@@ -1110,28 +1226,29 @@ async def register_one_async(task_id: int, http_client: httpx.AsyncClient,
                 if solver_cluster is not None:
                     return await solver_cluster.acquire_token(
                         sitekey=sitekey,
-                        queue_wait_timeout=5,
-                        direct_timeout=90,
-                        direct_attempts=2,
+                        queue_wait_timeout=SOLVER_QUEUE_WAIT_TIMEOUT,
+                        direct_timeout=SOLVER_DIRECT_TIMEOUT,
+                        direct_attempts=SOLVER_DIRECT_ATTEMPTS,
                     )
 
+                fallback_wait = SOLVER_QUEUE_WAIT_TIMEOUT
                 t = None
                 if token_queue is not None:
                     try:
                         # 兼容回退：仅当调度器未初始化时使用旧队列逻辑
-                        t = await asyncio.wait_for(token_queue.get(), timeout=5)
+                        t = await asyncio.wait_for(token_queue.get(), timeout=fallback_wait)
                         print(f"  ✅ 从预热队列取到 Token（队列剩余: {token_queue.qsize()}）")
                     except asyncio.TimeoutError:
-                        print(f"  ⚠️ 预热队列 5s 无现成 Token，回退到直接请求...")
+                        print(f"  ⚠️ 预热队列 {fallback_wait:g}s 无现成 Token，回退到直接请求...")
                 if not t:
-                    for attempt in range(2):
+                    for attempt in range(SOLVER_DIRECT_ATTEMPTS):
                         t = await get_turnstile_token_async(
-                            client=http_client, timeout=90, sitekey=sitekey
+                            client=http_client, timeout=SOLVER_DIRECT_TIMEOUT, sitekey=sitekey
                         )
                         if t:
                             break
-                        if attempt == 0:
-                            print(f"  ⚠️ 直接请求第 1 次失败，5s 后重试...")
+                        if attempt < SOLVER_DIRECT_ATTEMPTS - 1:
+                            print(f"  ⚠️ 直接请求第 {attempt + 1} 次失败，5s 后重试...")
                             await asyncio.sleep(5)
                 return t
 
@@ -1272,7 +1389,7 @@ async def batch_register(count: int = 1, concurrency: int = 5):
     _prefetch_stop = asyncio.Event()
     solver_cluster = None
     solver_status_task: asyncio.Task | None = None
-    _write_solver_status_snapshot(_build_solver_status_base(reason="initializing", running=False))
+    _write_solver_status_snapshot(_build_solver_status_base(reason="initializing", running=False, queue_capacity=queue_cap))
 
     # httpx 用于 Freemail 和 Turnstile Solver（无需 TLS 伪装）
     async with httpx.AsyncClient(
@@ -1327,7 +1444,7 @@ async def batch_register(count: int = 1, concurrency: int = 5):
             if preflight_info.get("preview"):
                 print(f"  ❌ [预检] 页面预览: {preflight_info['preview']}")
             _write_solver_status_snapshot(
-                _build_solver_status_base(reason=_RUNTIME_NETWORK_STATE["abort_reason"], running=False)
+                _build_solver_status_base(reason=_RUNTIME_NETWORK_STATE["abort_reason"], running=False, queue_capacity=queue_cap)
             )
         else:
             print(f"  ✅ [预检] {preflight_info.get('reason', 'x.ai sign-up 页面可达')}")
@@ -1345,25 +1462,28 @@ async def batch_register(count: int = 1, concurrency: int = 5):
                     print(f"  ⚠️ 预热获取 Sitekey 失败 ({e})，回退默认 Sitekey")
 
                 # 启动远程解题调度中心：统一管理预热与 direct path
-                per_node_concurrent = 1
                 solver_cluster = RemoteSolverCluster(
                     http_client=http_client,
                     node_provider=get_solver_nodes,
                     queue_capacity=queue_cap,
-                    queue_wait_timeout=5,
-                    token_timeout=90,
-                    poll_interval=2,
-                    token_max_age=110,
-                    breaker_seconds=15,
-                    breaker_threshold=2,
+                    queue_wait_timeout=SOLVER_QUEUE_WAIT_TIMEOUT,
+                    token_timeout=SOLVER_DIRECT_TIMEOUT,
+                    poll_interval=SOLVER_POLL_INTERVAL,
+                    token_max_age=SOLVER_TOKEN_MAX_AGE,
+                    breaker_seconds=SOLVER_BREAKER_SECONDS,
+                    breaker_threshold=SOLVER_BREAKER_THRESHOLD,
+                    soft_penalty_seconds=SOLVER_SOFT_PENALTY_SECONDS,
+                    prefetch_min_health_score=SOLVER_PREFETCH_MIN_HEALTH_SCORE,
+                    direct_min_health_score=SOLVER_DIRECT_MIN_HEALTH_SCORE,
+                    recovering_observe_seconds=SOLVER_RECOVERING_OBSERVE_SECONDS,
                 )
                 token_queue = solver_cluster.token_queue
                 _prefetch_stop = solver_cluster._prefetch_stop
                 await solver_cluster.start_prefetch(
                     initial_sitekey,
                     max_queue_target=queue_cap,
-                    reserve_for_direct=1,
-                    per_node_prefetch=per_node_concurrent,
+                    reserve_for_direct=SOLVER_RESERVE_FOR_DIRECT,
+                    per_node_prefetch=SOLVER_PER_NODE_PREFETCH,
                 )
                 await _capture_solver_status_snapshot(sitekey=initial_sitekey, running=True, reason="prefetch_started")
                 solver_status_task = asyncio.create_task(_publish_solver_status_snapshot(sitekey=initial_sitekey))
