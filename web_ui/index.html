@@ -1427,13 +1427,121 @@
                                                     0).toFixed(1) }}s</div>
                                             </div>
                                         </div>
+
+                                        <div class="grid grid-cols-1 xl:grid-cols-3 gap-3 text-[12px]">
+                                            <div class="rounded-lg border px-3 py-3"
+                                                :class="solverStatus.reinit.blocked_by_config ? 'bg-rose-50 border-rose-100' : (solverStatus.reinit.available ? 'bg-emerald-50 border-emerald-100' : 'bg-slate-50 border-slate-100')">
+                                                <div class="flex items-center justify-between gap-2">
+                                                    <div class="text-[11px] font-semibold"
+                                                        :class="solverStatus.reinit.blocked_by_config ? 'text-rose-700' : (solverStatus.reinit.available ? 'text-emerald-700' : 'text-slate-700')">
+                                                        远程自愈</div>
+                                                    <span class="text-[10px] px-2 py-0.5 rounded-full border"
+                                                        :class="solverStatus.reinit.blocked_by_config ? 'bg-white text-rose-700 border-rose-200' : (solverStatus.reinit.available ? 'bg-white text-emerald-700 border-emerald-200' : 'bg-white text-slate-600 border-slate-200')">
+                                                        {{ solverStatus.reinit.blocked_by_config ? 'blocked' :
+                                                        (solverStatus.reinit.available ? 'ready' : 'off') }}
+                                                    </span>
+                                                </div>
+                                                <div class="mt-2 text-[11px] text-gray-600 leading-5">
+                                                    <div>mode <span class="font-mono">{{
+                                                            solverStatus.reinit.last_effective_mode ||
+                                                            solverStatus.solver_diagnostics.reinit_last_effective_mode ||
+                                                            '--' }}</span> · skip {{ solverStatus.reinit.skip_count ||
+                                                        solverStatus.solver_diagnostics.reinit_skipped_count || 0 }} ·
+                                                        fail {{ solverStatus.reinit.fail_count ||
+                                                        solverStatus.solver_diagnostics.reinit_failed_count || 0 }}</div>
+                                                    <div class="mt-1">cooldown <span class="font-mono">{{
+                                                            Number(solverStatus.reinit.cooldown_remaining || 0).toFixed(1)
+                                                            }}s</span> · streak <span class="font-mono">{{
+                                                            solverStatus.reinit.last_reinit_trigger_streak || 0 }}</span>
+                                                    </div>
+                                                    <div class="mt-1 text-gray-500">targets: <span class="font-mono">{{
+                                                            Array.isArray(solverStatus.reinit.last_effective_targets) &&
+                                                            solverStatus.reinit.last_effective_targets.length > 0 ?
+                                                            solverStatus.reinit.last_effective_targets.join(', ') : '--'
+                                                            }}</span></div>
+                                                </div>
+                                                <div class="mt-2 text-[11px] leading-5"
+                                                    :class="solverStatus.reinit.blocked_by_config ? 'text-rose-700' : 'text-gray-500'">
+                                                    {{ solverStatus.reinit.last_skip_advice ||
+                                                    solverStatus.solver_diagnostics.reinit_last_advice ||
+                                                    solverStatus.reinit.block_reason || '当前未记录阻塞原因' }}
+                                                </div>
+                                            </div>
+
+                                            <div class="rounded-lg border px-3 py-3"
+                                                :class="((solverStatus.network_diagnostics.tls_error_count || 0) + (solverStatus.network_diagnostics.signup_preflight_error_count || 0) + (solverStatus.network_diagnostics.step0_timeout_count || 0) > 0 || solverStatus.network_diagnostics.preflight_ok === false || solverStatus.network_diagnostics.abort_reason) ? 'bg-amber-50 border-amber-100' : 'bg-sky-50 border-sky-100'">
+                                                <div class="flex items-center justify-between gap-2">
+                                                    <div class="text-[11px] font-semibold"
+                                                        :class="((solverStatus.network_diagnostics.tls_error_count || 0) + (solverStatus.network_diagnostics.signup_preflight_error_count || 0) + (solverStatus.network_diagnostics.step0_timeout_count || 0) > 0 || solverStatus.network_diagnostics.preflight_ok === false || solverStatus.network_diagnostics.abort_reason) ? 'text-amber-700' : 'text-sky-700'">
+                                                        网络诊断</div>
+                                                    <span class="text-[10px] px-2 py-0.5 rounded-full border"
+                                                        :class="solverStatus.network_diagnostics.preflight_ok === true ? 'bg-white text-emerald-700 border-emerald-200' : (solverStatus.network_diagnostics.preflight_ok === false ? 'bg-white text-rose-700 border-rose-200' : 'bg-white text-slate-600 border-slate-200')">
+                                                        {{ solverStatus.network_diagnostics.preflight_ok === true ? 'preflight-ok'
+                                                        : (solverStatus.network_diagnostics.preflight_ok === false ?
+                                                        'preflight-fail' : 'preflight-n/a') }}
+                                                    </span>
+                                                </div>
+                                                <div class="mt-2 text-[11px] text-gray-600 leading-5">
+                                                    <div>tls <span class="font-mono">{{
+                                                            solverStatus.network_diagnostics.tls_error_count || 0 }}</span>
+                                                        · signup <span class="font-mono">{{
+                                                            solverStatus.network_diagnostics.signup_preflight_error_count ||
+                                                            0 }}</span></div>
+                                                    <div class="mt-1">step0 timeout <span class="font-mono">{{
+                                                            solverStatus.network_diagnostics.step0_timeout_count || 0
+                                                            }}</span> · abort <span class="font-mono">{{
+                                                            solverStatus.network_diagnostics.abort_reason || '--' }}</span>
+                                                    </div>
+                                                </div>
+                                                <div class="mt-2 text-[11px] leading-5 text-gray-500">
+                                                    {{ solverStatus.network_diagnostics.last_network_error ||
+                                                    solverStatus.network_diagnostics.preflight_detail ||
+                                                    solverStatus.network_diagnostics.last_step0_error || '暂无网络异常' }}
+                                                </div>
+                                            </div>
+
+                                            <div class="rounded-lg border px-3 py-3"
+                                                :class="((solverStatus.solver_diagnostics.solver_no_candidate_count || 0) > 0 || solverStatus.solver_diagnostics.last_solver_cluster_error || solverStatus.solver_diagnostics.direct_last_unavailable_summary) ? 'bg-violet-50 border-violet-100' : 'bg-slate-50 border-slate-100'">
+                                                <div class="flex items-center justify-between gap-2">
+                                                    <div class="text-[11px] font-semibold"
+                                                        :class="((solverStatus.solver_diagnostics.solver_no_candidate_count || 0) > 0 || solverStatus.solver_diagnostics.last_solver_cluster_error || solverStatus.solver_diagnostics.direct_last_unavailable_summary) ? 'text-violet-700' : 'text-slate-700'">
+                                                        Solver 诊断</div>
+                                                    <span class="text-[10px] px-2 py-0.5 rounded-full border"
+                                                        :class="(solverStatus.solver_diagnostics.solver_no_candidate_count || 0) > 0 ? 'bg-white text-violet-700 border-violet-200' : 'bg-white text-slate-600 border-slate-200'">
+                                                        no-candidate {{
+                                                        solverStatus.solver_diagnostics.solver_no_candidate_count || 0 }}
+                                                    </span>
+                                                </div>
+                                                <div class="mt-2 text-[11px] text-gray-600 leading-5">
+                                                    <div>mode <span class="font-mono">{{
+                                                            solverStatus.solver_diagnostics.reinit_last_effective_mode ||
+                                                            solverStatus.reinit.last_effective_mode || '--' }}</span> ·
+                                                        since <span class="font-mono">{{
+                                                            formatTimestampAge(solverStatus.solver_diagnostics.direct_last_unavailable_since)
+                                                            }}</span></div>
+                                                    <div class="mt-1 text-gray-500">failed targets: <span
+                                                            class="font-mono">{{
+                                                            Array.isArray(solverStatus.solver_diagnostics.reinit_last_failed_targets)
+                                                            &&
+                                                            solverStatus.solver_diagnostics.reinit_last_failed_targets.length
+                                                            > 0 ?
+                                                            solverStatus.solver_diagnostics.reinit_last_failed_targets.join(', ')
+                                                            : '--' }}</span></div>
+                                                </div>
+                                                <div class="mt-2 text-[11px] leading-5 text-gray-500">
+                                                    {{ solverStatus.solver_diagnostics.direct_last_unavailable_summary ||
+                                                    solverStatus.solver_diagnostics.last_solver_cluster_error ||
+                                                    '暂无 Solver 集群异常' }}
+                                                </div>
+                                            </div>
+                                        </div>
                                     </div>
 
                                     <div class="rounded-xl border border-gray-100 bg-[#FAFAFA] p-4 flex flex-col gap-3">
                                         <div class="flex items-center justify-between gap-3 flex-wrap">
                                             <div>
                                                 <div class="text-[12px] font-semibold text-gray-700">节点明细</div>
-                                                <div class="text-[11px] text-gray-400 mt-1">展示最近阶段、错误、熔断与并发占用</div>
+                                                <div class="text-[11px] text-gray-400 mt-1">展示最近阶段、错误、自愈状态与并发占用</div>
                                             </div>
                                             <div class="text-[11px] text-gray-400">{{ solverStatus.nodes.length }} nodes
                                             </div>
@@ -1508,6 +1616,47 @@
                                                         node.recent_captcha_fail_count || 0 }}</div>
                                                     <div>mem {{ Number(node.memory_mb || 0).toFixed(1) }}MB · eff {{
                                                         node.effective_capacity || 0 }}</div>
+                                                </div>
+
+                                                <div v-if="node.reinit_in_progress || node.last_reinit_status || node.last_reinit_mode || Number(node.force_reinit_count || 0) > 0 || Number(node.last_rebuild_browser_count || 0) > 0"
+                                                    class="mt-3 rounded-md border px-3 py-2 text-[11px]"
+                                                    :class="node.reinit_in_progress ? 'bg-sky-50 text-sky-700 border-sky-100' : ((node.last_reinit_error || node.last_reinit_status === 'failed') ? 'bg-rose-50 text-rose-700 border-rose-100' : 'bg-indigo-50 text-indigo-700 border-indigo-100')">
+                                                    <div class="flex items-center gap-2 flex-wrap">
+                                                        <span class="px-2 py-0.5 rounded-full border text-[10px]"
+                                                            :class="node.reinit_in_progress ? 'bg-white text-sky-700 border-sky-200' : ((node.last_reinit_error || node.last_reinit_status === 'failed') ? 'bg-white text-rose-700 border-rose-200' : 'bg-white text-indigo-700 border-indigo-200')">
+                                                            {{ node.reinit_in_progress ? 'reinit-running' :
+                                                            (node.last_reinit_status || 'reinit-idle') }}
+                                                        </span>
+                                                        <span v-if="node.last_reinit_mode"
+                                                            class="px-2 py-0.5 rounded-full border text-[10px] bg-white border-gray-200">
+                                                            {{ node.last_reinit_mode }}
+                                                        </span>
+                                                        <span v-if="Number(node.force_reinit_count || 0) > 0"
+                                                            class="px-2 py-0.5 rounded-full border text-[10px] bg-white border-gray-200">
+                                                            force ×{{ node.force_reinit_count }}
+                                                        </span>
+                                                        <span v-if="Number(node.last_rebuild_browser_count || 0) > 0"
+                                                            class="px-2 py-0.5 rounded-full border text-[10px] bg-white border-gray-200">
+                                                            rebuilt {{ node.last_rebuild_browser_count }}
+                                                        </span>
+                                                        <span v-if="Number(node.reinit_cooldown_remaining || 0) > 0"
+                                                            class="px-2 py-0.5 rounded-full border text-[10px] bg-white border-gray-200">
+                                                            cooldown {{ Math.ceil(node.reinit_cooldown_remaining || 0) }}s
+                                                        </span>
+                                                    </div>
+                                                    <div class="mt-2 font-mono text-[10px] opacity-80">
+                                                        req {{ formatTimestampAge(node.last_reinit_request_at) }} · done {{
+                                                        formatTimestampAge(node.last_reinit_finished_at) }} · force {{
+                                                        formatTimestampAge(node.last_force_reinit_at) }}
+                                                    </div>
+                                                    <div v-if="Array.isArray(node.last_reinit_drained_indexes) && node.last_reinit_drained_indexes.length > 0"
+                                                        class="mt-1">
+                                                        drain {{ node.last_reinit_drained_indexes.join(', ') }}
+                                                    </div>
+                                                    <div v-if="node.last_reinit_trigger_summary" class="mt-1 leading-5">{{
+                                                        node.last_reinit_trigger_summary }}</div>
+                                                    <div v-else-if="node.last_reinit_message" class="mt-1 leading-5">{{
+                                                        node.last_reinit_message }}</div>
                                                 </div>
 
                                                 <div v-if="node.degraded_reason"
@@ -2723,6 +2872,11 @@
                         fallback_count: 0,
                         direct_success_count: 0,
                         direct_fail_count: 0,
+                        direct_unavailable_streak: 0,
+                        direct_last_unavailable_since: 0,
+                        last_direct_unavailable_at: 0,
+                        last_direct_unavailable_summary: '',
+                        last_token_success_at: 0,
                         in_flight_prefetch_total: 0,
                         in_flight_prefetch_by_node: {},
                         last_fill_at: 0,
@@ -2754,6 +2908,60 @@
                         per_node_prefetch: 0,
                         max_queue_target: 0,
                         queue_capacity: 0,
+                    },
+                    reinit: {
+                        enabled: false,
+                        admin_configured: false,
+                        available: false,
+                        blocked_by_config: false,
+                        block_reason: '',
+                        last_skip_is_fatal: false,
+                        last_skip_advice: '',
+                        trigger_streak: 0,
+                        cooldown_seconds: 0,
+                        cooldown_remaining: 0,
+                        request_timeout: 0,
+                        max_targets: 0,
+                        allow_broadcast: false,
+                        requested_by: '',
+                        last_effective_mode: '',
+                        last_effective_targets: [],
+                        last_failed_targets: [],
+                        last_reinit_at: 0,
+                        last_reinit_reason: '',
+                        last_reinit_targets: [],
+                        last_reinit_results: [],
+                        last_reinit_summary: '',
+                        last_reinit_trigger_streak: 0,
+                        attempt_count: 0,
+                        success_count: 0,
+                        fail_count: 0,
+                        skip_count: 0,
+                    },
+                    network_diagnostics: {
+                        tls_error_count: 0,
+                        signup_preflight_error_count: 0,
+                        last_network_error: '',
+                        preflight_ok: null,
+                        preflight_detail: '',
+                        step0_timeout_count: 0,
+                        last_step0_error: '',
+                        abort_reason: '',
+                    },
+                    solver_diagnostics: {
+                        reinit_available: false,
+                        reinit_blocked_by_config: false,
+                        reinit_block_reason: '',
+                        reinit_skipped_count: 0,
+                        reinit_failed_count: 0,
+                        solver_no_candidate_count: 0,
+                        last_solver_cluster_error: '',
+                        reinit_last_effective_mode: '',
+                        reinit_last_effective_targets: [],
+                        reinit_last_failed_targets: [],
+                        reinit_last_advice: '',
+                        direct_last_unavailable_summary: '',
+                        direct_last_unavailable_since: 0,
                     },
                     nodes: []
                 })
@@ -3137,20 +3345,33 @@
                         const res = await fetch('/api/solver-status')
                         if (res.ok) {
                             const payload = await res.json()
+                            const defaultSolverStatus = createDefaultSolverStatus()
                             solverStatus.value = {
-                                ...createDefaultSolverStatus(),
+                                ...defaultSolverStatus,
                                 ...(payload || {}),
                                 summary: {
-                                    ...createDefaultSolverStatus().summary,
+                                    ...defaultSolverStatus.summary,
                                     ...((payload || {}).summary || {})
                                 },
                                 token_queue: {
-                                    ...createDefaultSolverStatus().token_queue,
+                                    ...defaultSolverStatus.token_queue,
                                     ...((payload || {}).token_queue || {})
                                 },
                                 scheduler: {
-                                    ...createDefaultSolverStatus().scheduler,
+                                    ...defaultSolverStatus.scheduler,
                                     ...((payload || {}).scheduler || {})
+                                },
+                                reinit: {
+                                    ...defaultSolverStatus.reinit,
+                                    ...((payload || {}).reinit || {})
+                                },
+                                network_diagnostics: {
+                                    ...defaultSolverStatus.network_diagnostics,
+                                    ...((payload || {}).network_diagnostics || {})
+                                },
+                                solver_diagnostics: {
+                                    ...defaultSolverStatus.solver_diagnostics,
+                                    ...((payload || {}).solver_diagnostics || {})
                                 },
                                 nodes: Array.isArray((payload || {}).nodes) ? payload.nodes : []
                             }

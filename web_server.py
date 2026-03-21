@@ -237,6 +237,18 @@ def _build_solver_node_status(
     reinit_supported = bool(live_data.get("reinit_supported", snapshot_node.get("reinit_supported", False)))
     reinit_cooldown_until = _safe_float(live_data.get("reinit_cooldown_until", snapshot_node.get("reinit_cooldown_until", 0.0)))
     reinit_cooldown_remaining = round(_safe_float(live_data.get("reinit_cooldown_remaining", snapshot_node.get("reinit_cooldown_remaining", 0.0))), 3)
+    last_reinit_mode = str(live_data.get("last_reinit_mode") or snapshot_node.get("last_reinit_mode") or "")
+    last_reinit_trigger_summary = str(live_data.get("last_reinit_trigger_summary") or snapshot_node.get("last_reinit_trigger_summary") or "")
+    last_force_reinit_at = _safe_float(live_data.get("last_force_reinit_at", snapshot_node.get("last_force_reinit_at", 0.0)))
+    force_reinit_count = _safe_int(live_data.get("force_reinit_count", snapshot_node.get("force_reinit_count", 0)))
+    last_rebuild_browser_count = _safe_int(live_data.get("last_rebuild_browser_count", snapshot_node.get("last_rebuild_browser_count", 0)))
+    drained_indexes_source = live_data.get("last_reinit_drained_indexes", snapshot_node.get("last_reinit_drained_indexes", []))
+    last_reinit_drained_indexes = []
+    if isinstance(drained_indexes_source, list):
+        for item in drained_indexes_source:
+            index_value = _safe_int(item, -1)
+            if index_value >= 0:
+                last_reinit_drained_indexes.append(index_value)
 
     online = bool(live_data) and not error
     last_status = str(snapshot_node.get("last_status") or ("healthy" if online else "offline"))
@@ -356,6 +368,12 @@ def _build_solver_node_status(
         "last_reinit_error": last_reinit_error,
         "last_reinit_status": last_reinit_status,
         "last_reinit_message": last_reinit_message,
+        "last_reinit_mode": last_reinit_mode,
+        "last_reinit_trigger_summary": last_reinit_trigger_summary,
+        "last_force_reinit_at": last_force_reinit_at,
+        "force_reinit_count": force_reinit_count,
+        "last_rebuild_browser_count": last_rebuild_browser_count,
+        "last_reinit_drained_indexes": last_reinit_drained_indexes,
         "reinit_in_progress": reinit_in_progress,
         "reinit_supported": reinit_supported,
         "reinit_cooldown_until": reinit_cooldown_until,
@@ -992,6 +1010,8 @@ async def solver_status_api():
     snapshot_summary = snapshot.get("summary", {}) if isinstance(snapshot.get("summary", {}), dict) else {}
     snapshot_scheduler = snapshot.get("scheduler", {}) if isinstance(snapshot.get("scheduler", {}), dict) else {}
     snapshot_reinit = snapshot.get("reinit", {}) if isinstance(snapshot.get("reinit", {}), dict) else {}
+    snapshot_network_diagnostics = snapshot.get("network_diagnostics", {}) if isinstance(snapshot.get("network_diagnostics", {}), dict) else {}
+    snapshot_solver_diagnostics = snapshot.get("solver_diagnostics", {}) if isinstance(snapshot.get("solver_diagnostics", {}), dict) else {}
     scheduler = {
         "queue_wait_timeout": round(_safe_float(snapshot_scheduler.get("queue_wait_timeout", 0.0)), 3),
         "token_timeout": _safe_int(snapshot_scheduler.get("token_timeout", 0)),
@@ -1113,6 +1133,7 @@ async def solver_status_api():
         "direct_success_count": _safe_int(snapshot.get("direct_success_count", 0)),
         "direct_fail_count": _safe_int(snapshot.get("direct_fail_count", 0)),
         "direct_unavailable_streak": _safe_int(snapshot.get("direct_unavailable_streak", 0)),
+        "direct_last_unavailable_since": _safe_float(snapshot.get("direct_last_unavailable_since", 0.0)),
         "last_direct_unavailable_at": _safe_float(snapshot.get("last_direct_unavailable_at", 0.0)),
         "last_direct_unavailable_summary": str(snapshot.get("last_direct_unavailable_summary") or ""),
         "last_token_success_at": _safe_float(snapshot.get("last_token_success_at", 0.0)),
@@ -1133,9 +1154,28 @@ async def solver_status_api():
     if token_queue["queue_target"] <= 0:
         token_queue["queue_target"] = max(token_queue["queue_capacity"] - token_queue["reserve_for_direct"], 0)
 
+    default_reinit_blocked_by_config = bool(scheduler.get("reinit_enabled") and not scheduler.get("admin_configured"))
+    reinit_last_targets = snapshot_reinit.get("last_reinit_targets", [])
+    if not isinstance(reinit_last_targets, list):
+        reinit_last_targets = []
+    reinit_last_results = snapshot_reinit.get("last_reinit_results", [])
+    if not isinstance(reinit_last_results, list):
+        reinit_last_results = []
+    reinit_last_effective_targets = snapshot_reinit.get("last_effective_targets", snapshot.get("reinit_last_effective_targets", []))
+    if not isinstance(reinit_last_effective_targets, list):
+        reinit_last_effective_targets = []
+    reinit_last_failed_targets = snapshot_reinit.get("last_failed_targets", snapshot.get("reinit_last_failed_targets", []))
+    if not isinstance(reinit_last_failed_targets, list):
+        reinit_last_failed_targets = []
+
     reinit = {
         "enabled": bool(snapshot_reinit.get("enabled", scheduler.get("reinit_enabled", False))),
         "admin_configured": bool(snapshot_reinit.get("admin_configured", scheduler.get("admin_configured", False))),
+        "available": bool(snapshot_reinit.get("available", bool(scheduler.get("reinit_enabled") and scheduler.get("admin_configured")))),
+        "blocked_by_config": bool(snapshot_reinit.get("blocked_by_config", default_reinit_blocked_by_config)),
+        "block_reason": str(snapshot_reinit.get("block_reason") or ("missing_admin_token" if default_reinit_blocked_by_config else "")),
+        "last_skip_is_fatal": bool(snapshot_reinit.get("last_skip_is_fatal", False)),
+        "last_skip_advice": str(snapshot_reinit.get("last_skip_advice") or ("请在注册端与远程解题端同时配置一致的 SOLVER_ADMIN_TOKEN" if default_reinit_blocked_by_config else "")),
         "trigger_streak": _safe_int(snapshot_reinit.get("trigger_streak", scheduler.get("reinit_trigger_streak", 0))),
         "cooldown_seconds": round(_safe_float(snapshot_reinit.get("cooldown_seconds", scheduler.get("reinit_cooldown_seconds", 0.0))), 3),
         "cooldown_remaining": round(_safe_float(snapshot_reinit.get("cooldown_remaining", 0.0)), 3),
@@ -1143,16 +1183,53 @@ async def solver_status_api():
         "max_targets": _safe_int(snapshot_reinit.get("max_targets", scheduler.get("reinit_max_targets", 0))),
         "allow_broadcast": bool(snapshot_reinit.get("allow_broadcast", scheduler.get("reinit_allow_broadcast", False))),
         "requested_by": str(snapshot_reinit.get("requested_by", scheduler.get("reinit_requested_by", "")) or ""),
+        "last_effective_mode": str(snapshot_reinit.get("last_effective_mode", snapshot.get("reinit_last_effective_mode", "")) or ""),
+        "last_effective_targets": reinit_last_effective_targets,
+        "last_failed_targets": reinit_last_failed_targets,
         "last_reinit_at": _safe_float(snapshot_reinit.get("last_reinit_at", 0.0)),
         "last_reinit_reason": str(snapshot_reinit.get("last_reinit_reason") or ""),
-        "last_reinit_targets": snapshot_reinit.get("last_reinit_targets", []) if isinstance(snapshot_reinit.get("last_reinit_targets", []), list) else [],
-        "last_reinit_results": snapshot_reinit.get("last_reinit_results", []) if isinstance(snapshot_reinit.get("last_reinit_results", []), list) else [],
+        "last_reinit_targets": reinit_last_targets,
+        "last_reinit_results": reinit_last_results,
         "last_reinit_summary": str(snapshot_reinit.get("last_reinit_summary") or ""),
         "last_reinit_trigger_streak": _safe_int(snapshot_reinit.get("last_reinit_trigger_streak", 0)),
         "attempt_count": _safe_int(snapshot_reinit.get("attempt_count", 0)),
         "success_count": _safe_int(snapshot_reinit.get("success_count", 0)),
         "fail_count": _safe_int(snapshot_reinit.get("fail_count", 0)),
         "skip_count": _safe_int(snapshot_reinit.get("skip_count", 0)),
+    }
+
+    solver_diag_effective_targets = snapshot_solver_diagnostics.get("reinit_last_effective_targets", reinit["last_effective_targets"])
+    if not isinstance(solver_diag_effective_targets, list):
+        solver_diag_effective_targets = list(reinit["last_effective_targets"])
+    solver_diag_failed_targets = snapshot_solver_diagnostics.get("reinit_last_failed_targets", reinit["last_failed_targets"])
+    if not isinstance(solver_diag_failed_targets, list):
+        solver_diag_failed_targets = list(reinit["last_failed_targets"])
+
+    network_diagnostics = {
+        "tls_error_count": _safe_int(snapshot_network_diagnostics.get("tls_error_count", 0)),
+        "signup_preflight_error_count": _safe_int(snapshot_network_diagnostics.get("signup_preflight_error_count", 0)),
+        "last_network_error": str(snapshot_network_diagnostics.get("last_network_error") or ""),
+        "preflight_ok": snapshot_network_diagnostics.get("preflight_ok"),
+        "preflight_detail": str(snapshot_network_diagnostics.get("preflight_detail") or ""),
+        "step0_timeout_count": _safe_int(snapshot_network_diagnostics.get("step0_timeout_count", 0)),
+        "last_step0_error": str(snapshot_network_diagnostics.get("last_step0_error") or ""),
+        "abort_reason": str(snapshot_network_diagnostics.get("abort_reason") or ""),
+    }
+
+    solver_diagnostics = {
+        "reinit_available": bool(snapshot_solver_diagnostics.get("reinit_available", reinit["available"])),
+        "reinit_blocked_by_config": bool(snapshot_solver_diagnostics.get("reinit_blocked_by_config", reinit["blocked_by_config"])),
+        "reinit_block_reason": str(snapshot_solver_diagnostics.get("reinit_block_reason", reinit["block_reason"]) or ""),
+        "reinit_skipped_count": _safe_int(snapshot_solver_diagnostics.get("reinit_skipped_count", reinit["skip_count"])),
+        "reinit_failed_count": _safe_int(snapshot_solver_diagnostics.get("reinit_failed_count", reinit["fail_count"])),
+        "solver_no_candidate_count": _safe_int(snapshot_solver_diagnostics.get("solver_no_candidate_count", 0)),
+        "last_solver_cluster_error": str(snapshot_solver_diagnostics.get("last_solver_cluster_error") or ""),
+        "reinit_last_effective_mode": str(snapshot_solver_diagnostics.get("reinit_last_effective_mode", reinit["last_effective_mode"]) or ""),
+        "reinit_last_effective_targets": solver_diag_effective_targets,
+        "reinit_last_failed_targets": solver_diag_failed_targets,
+        "reinit_last_advice": str(snapshot_solver_diagnostics.get("reinit_last_advice", reinit["last_skip_advice"]) or ""),
+        "direct_last_unavailable_summary": str(snapshot_solver_diagnostics.get("direct_last_unavailable_summary", token_queue.get("last_direct_unavailable_summary", "")) or ""),
+        "direct_last_unavailable_since": _safe_float(snapshot_solver_diagnostics.get("direct_last_unavailable_since", token_queue.get("direct_last_unavailable_since", 0.0))),
     }
 
     summary = {
@@ -1192,6 +1269,8 @@ async def solver_status_api():
         "token_queue": token_queue,
         "scheduler": scheduler,
         "reinit": reinit,
+        "network_diagnostics": network_diagnostics,
+        "solver_diagnostics": solver_diagnostics,
     }
 
 

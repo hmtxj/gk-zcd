@@ -210,6 +210,11 @@ _RUNTIME_NETWORK_STATE = {
     "preflight_detail": "",
     "step0_timeout_count": 0,
     "last_error": "",
+    "last_network_error": "",
+    "network_tls_error_count": 0,
+    "signup_preflight_error_count": 0,
+    "solver_no_candidate_count": 0,
+    "last_solver_cluster_error": "",
     "abort_reason": "",
     "lock": None,  # 在 batch_register 中初始化为 asyncio.Lock()
 }
@@ -262,6 +267,72 @@ def _build_solver_scheduler_config(queue_capacity: int = 0) -> dict[str, object]
     }
 
 
+def _build_runtime_network_diagnostics() -> dict[str, object]:
+    return {
+        "tls_error_count": int(_RUNTIME_NETWORK_STATE.get("network_tls_error_count", 0) or 0),
+        "signup_preflight_error_count": int(_RUNTIME_NETWORK_STATE.get("signup_preflight_error_count", 0) or 0),
+        "last_network_error": str(_RUNTIME_NETWORK_STATE.get("last_network_error", "") or ""),
+        "preflight_ok": _RUNTIME_NETWORK_STATE.get("preflight_ok"),
+        "preflight_detail": str(_RUNTIME_NETWORK_STATE.get("preflight_detail", "") or ""),
+        "step0_timeout_count": int(_RUNTIME_NETWORK_STATE.get("step0_timeout_count", 0) or 0),
+        "last_step0_error": str(_RUNTIME_NETWORK_STATE.get("last_error", "") or ""),
+        "abort_reason": str(_RUNTIME_NETWORK_STATE.get("abort_reason", "") or ""),
+    }
+
+
+def _build_runtime_solver_diagnostics(cluster_snapshot: dict[str, object] | None = None) -> dict[str, object]:
+    default_blocked = bool(SOLVER_REINIT_ENABLED and not SOLVER_ADMIN_TOKEN)
+    default_advice = "请在注册端与远程解题端同时配置一致的 SOLVER_ADMIN_TOKEN" if default_blocked else ""
+    diagnostics: dict[str, object] = {
+        "reinit_available": bool(SOLVER_REINIT_ENABLED and bool(SOLVER_ADMIN_TOKEN)),
+        "reinit_blocked_by_config": default_blocked,
+        "reinit_block_reason": "missing_admin_token" if default_blocked else "",
+        "reinit_skipped_count": 0,
+        "reinit_failed_count": 0,
+        "solver_no_candidate_count": int(_RUNTIME_NETWORK_STATE.get("solver_no_candidate_count", 0) or 0),
+        "last_solver_cluster_error": str(_RUNTIME_NETWORK_STATE.get("last_solver_cluster_error", "") or ""),
+        "reinit_last_effective_mode": "",
+        "reinit_last_effective_targets": [],
+        "reinit_last_failed_targets": [],
+        "reinit_last_advice": default_advice,
+        "direct_last_unavailable_summary": "",
+        "direct_last_unavailable_since": 0.0,
+    }
+    if not isinstance(cluster_snapshot, dict):
+        return diagnostics
+
+    reinit = cluster_snapshot.get("reinit")
+    if isinstance(reinit, dict):
+        diagnostics.update(
+            {
+                "reinit_available": bool(reinit.get("available", diagnostics["reinit_available"])),
+                "reinit_blocked_by_config": bool(reinit.get("blocked_by_config", diagnostics["reinit_blocked_by_config"])),
+                "reinit_block_reason": str(reinit.get("block_reason", diagnostics["reinit_block_reason"]) or ""),
+                "reinit_skipped_count": int(reinit.get("skip_count", 0) or 0),
+                "reinit_failed_count": int(reinit.get("fail_count", 0) or 0),
+                "reinit_last_effective_mode": str(reinit.get("last_effective_mode", "") or ""),
+                "reinit_last_effective_targets": list(reinit.get("last_effective_targets", []) or []),
+                "reinit_last_failed_targets": list(reinit.get("last_failed_targets", []) or []),
+                "reinit_last_advice": str(reinit.get("last_skip_advice", diagnostics["reinit_last_advice"]) or ""),
+            }
+        )
+
+    direct_summary = str(
+        cluster_snapshot.get("direct_last_unavailable_summary")
+        or cluster_snapshot.get("last_direct_unavailable_summary")
+        or ""
+    )
+    raw_direct_since = cluster_snapshot.get("direct_last_unavailable_since", 0.0)
+    diagnostics["direct_last_unavailable_summary"] = direct_summary
+    diagnostics["direct_last_unavailable_since"] = round(float(raw_direct_since or 0.0), 3) if raw_direct_since else 0.0
+    if direct_summary:
+        diagnostics["last_solver_cluster_error"] = direct_summary
+    elif diagnostics["reinit_block_reason"] and not diagnostics["last_solver_cluster_error"]:
+        diagnostics["last_solver_cluster_error"] = str(diagnostics["reinit_block_reason"] or "")
+
+    return diagnostics
+
+
 def _build_solver_status_base(reason: str = "", running: bool = False, queue_capacity: int = 0) -> dict[str, object]:
     normalized_queue_capacity = max(int(queue_capacity or 0), 0)
     return {
@@ -292,6 +363,14 @@ def _build_solver_status_base(reason: str = "", running: bool = False, queue_cap
         "reinit": {
             "enabled": SOLVER_REINIT_ENABLED,
             "admin_configured": bool(SOLVER_ADMIN_TOKEN),
+            "available": bool(SOLVER_REINIT_ENABLED and SOLVER_ADMIN_TOKEN),
+            "blocked_by_config": bool(SOLVER_REINIT_ENABLED and not SOLVER_ADMIN_TOKEN),
+            "block_reason": "missing_admin_token" if SOLVER_REINIT_ENABLED and not SOLVER_ADMIN_TOKEN else "",
+            "last_skip_is_fatal": bool(SOLVER_REINIT_ENABLED and not SOLVER_ADMIN_TOKEN),
+            "last_skip_advice": "请在注册端与远程解题端同时配置一致的 SOLVER_ADMIN_TOKEN" if SOLVER_REINIT_ENABLED and not SOLVER_ADMIN_TOKEN else "",
+            "last_effective_mode": "",
+            "last_effective_targets": [],
+            "last_failed_targets": [],
             "trigger_streak": SOLVER_REINIT_TRIGGER_STREAK,
             "cooldown_seconds": round(SOLVER_REINIT_COOLDOWN_SECONDS, 3),
             "cooldown_remaining": 0.0,
@@ -312,6 +391,8 @@ def _build_solver_status_base(reason: str = "", running: bool = False, queue_cap
         },
         "summary": _build_solver_summary_base(),
         "scheduler": _build_solver_scheduler_config(queue_capacity=normalized_queue_capacity),
+        "network_diagnostics": _build_runtime_network_diagnostics(),
+        "solver_diagnostics": _build_runtime_solver_diagnostics(),
         "nodes": [],
     }
 
@@ -334,6 +415,7 @@ def _write_solver_status_snapshot(payload: dict[str, object] | None = None):
 
 async def _capture_solver_status_snapshot(sitekey: str = "", running: bool | None = None, reason: str = ""):
     queue_capacity = 0
+    cluster_snapshot: dict[str, object] | None = None
     if solver_cluster is not None:
         queue_capacity = int(getattr(solver_cluster, "queue_capacity", 0) or 0)
     elif token_queue is not None:
@@ -394,6 +476,8 @@ async def _capture_solver_status_snapshot(sitekey: str = "", running: bool | Non
             }
         )
     snapshot["scheduler"] = scheduler
+    snapshot["network_diagnostics"] = _build_runtime_network_diagnostics()
+    snapshot["solver_diagnostics"] = _build_runtime_solver_diagnostics(cluster_snapshot=snapshot if cluster_snapshot is not None else None)
 
     _write_solver_status_snapshot(snapshot)
 
@@ -543,6 +627,12 @@ def is_timeout_like(message: str) -> bool:
     return any(marker in lowered for marker in ("curl: (28)", "timed out", "timeout"))
 
 
+def is_tls_like(message: str) -> bool:
+    """判断异常文本是否属于 TLS/握手层异常。"""
+    lowered = (message or "").lower()
+    return any(marker in lowered for marker in ("curl: (35)", "tls connect error", "ssl", "handshake"))
+
+
 async def note_step0_result(success: bool, detail: str = "") -> bool:
     """记录 Step 0 结果；连续超时达到阈值时触发批量熔断。"""
     global _RUNTIME_NETWORK_STATE, _batch_abort, _prefetch_stop, solver_cluster
@@ -557,8 +647,13 @@ async def note_step0_result(success: bool, detail: str = "") -> bool:
             _RUNTIME_NETWORK_STATE["last_error"] = ""
             return False
 
-        _RUNTIME_NETWORK_STATE["last_error"] = detail
-        if not is_timeout_like(detail):
+        normalized_detail = str(detail or "").strip()
+        _RUNTIME_NETWORK_STATE["last_error"] = normalized_detail
+        if normalized_detail:
+            _RUNTIME_NETWORK_STATE["last_network_error"] = normalized_detail
+            if is_tls_like(normalized_detail):
+                _RUNTIME_NETWORK_STATE["network_tls_error_count"] += 1
+        if not is_timeout_like(normalized_detail):
             return False
 
         _RUNTIME_NETWORK_STATE["step0_timeout_count"] += 1
@@ -577,6 +672,33 @@ async def note_step0_result(success: bool, detail: str = "") -> bool:
         if solver_cluster is not None:
             asyncio.create_task(solver_cluster.stop_prefetch())
         return True
+
+
+async def note_solver_cluster_issue(detail: str = "", cluster_snapshot: dict[str, object] | None = None):
+    lock = _RUNTIME_NETWORK_STATE.get("lock")
+    if not lock:
+        return
+
+    direct_summary = ""
+    reinit_block_reason = ""
+    if isinstance(cluster_snapshot, dict):
+        direct_summary = str(
+            cluster_snapshot.get("direct_last_unavailable_summary")
+            or cluster_snapshot.get("last_direct_unavailable_summary")
+            or ""
+        )
+        reinit_payload = cluster_snapshot.get("reinit")
+        if isinstance(reinit_payload, dict):
+            reinit_block_reason = str(reinit_payload.get("block_reason") or "")
+
+    async with lock:
+        if direct_summary:
+            _RUNTIME_NETWORK_STATE["solver_no_candidate_count"] += 1
+            _RUNTIME_NETWORK_STATE["last_solver_cluster_error"] = direct_summary
+        elif reinit_block_reason:
+            _RUNTIME_NETWORK_STATE["last_solver_cluster_error"] = reinit_block_reason
+        elif detail:
+            _RUNTIME_NETWORK_STATE["last_solver_cluster_error"] = str(detail or "")
 
 
 async def preflight_signup_healthcheck(proxy_addr: str = "") -> tuple[bool, dict]:
@@ -1362,7 +1484,19 @@ async def register_one_async(task_id: int, http_client: httpx.AsyncClient,
             # 等待 Turnstile Token（如果还没完成）
             turnstile_token = await token_task
             if not turnstile_token:
+                cluster_snapshot = await solver_cluster.get_status_snapshot() if solver_cluster is not None else None
+                await note_solver_cluster_issue(detail="Turnstile Token 获取失败", cluster_snapshot=cluster_snapshot)
                 print(f"{tag} ❌ Turnstile Token 获取失败")
+                if isinstance(cluster_snapshot, dict):
+                    direct_summary = str(cluster_snapshot.get("direct_last_unavailable_summary") or "")
+                    reinit_payload = cluster_snapshot.get("reinit") if isinstance(cluster_snapshot.get("reinit"), dict) else {}
+                    if direct_summary:
+                        print(f"{tag} ❌ 调度诊断: {direct_summary}")
+                    if isinstance(reinit_payload, dict) and reinit_payload.get("block_reason"):
+                        advice = str(reinit_payload.get("last_skip_advice") or "")
+                        print(f"{tag} ❌ 自愈阻塞: {reinit_payload.get('block_reason')}")
+                        if advice:
+                            print(f"{tag} ❌ 处理建议: {advice}")
                 print(f"{tag} [STAT] FAIL")
                 return None
             print(f"  ✅ Turnstile Token: {turnstile_token[:50]}...")
@@ -1441,6 +1575,11 @@ async def batch_register(count: int = 1, concurrency: int = 5):
     _RUNTIME_NETWORK_STATE["preflight_detail"] = ""
     _RUNTIME_NETWORK_STATE["step0_timeout_count"] = 0
     _RUNTIME_NETWORK_STATE["last_error"] = ""
+    _RUNTIME_NETWORK_STATE["last_network_error"] = ""
+    _RUNTIME_NETWORK_STATE["network_tls_error_count"] = 0
+    _RUNTIME_NETWORK_STATE["signup_preflight_error_count"] = 0
+    _RUNTIME_NETWORK_STATE["solver_no_candidate_count"] = 0
+    _RUNTIME_NETWORK_STATE["last_solver_cluster_error"] = ""
     _RUNTIME_NETWORK_STATE["abort_reason"] = ""
     _batch_abort = asyncio.Event()
     # 预热队列容量 = 并发数 * 2，给予充足缓冲
@@ -1493,6 +1632,11 @@ async def batch_register(count: int = 1, concurrency: int = 5):
         preflight_ok, preflight_info = await preflight_signup_healthcheck(preflight_proxy)
         _RUNTIME_NETWORK_STATE["preflight_ok"] = preflight_ok
         _RUNTIME_NETWORK_STATE["preflight_detail"] = preflight_info.get("reason", "")
+        if not preflight_ok:
+            _RUNTIME_NETWORK_STATE["signup_preflight_error_count"] += 1
+            _RUNTIME_NETWORK_STATE["last_network_error"] = str(preflight_info.get("reason", "") or "")
+            if is_tls_like(_RUNTIME_NETWORK_STATE["last_network_error"]):
+                _RUNTIME_NETWORK_STATE["network_tls_error_count"] += 1
 
         initial_sitekey = DEFAULT_SITE_KEY
         if not preflight_ok:
@@ -1522,7 +1666,9 @@ async def batch_register(count: int = 1, concurrency: int = 5):
                     print(f"  ⚠️ 预热获取 Sitekey 失败 ({e})，回退默认 Sitekey")
 
                 if SOLVER_REINIT_ENABLED and not SOLVER_ADMIN_TOKEN:
+                    _RUNTIME_NETWORK_STATE["last_solver_cluster_error"] = "已开启定向软初始化，但未配置 SOLVER_ADMIN_TOKEN；达到阈值时将自动跳过远程重置"
                     print("  ⚠️ [节点自愈] 已开启定向软初始化，但未配置 SOLVER_ADMIN_TOKEN；达到阈值时将自动跳过远程重置")
+                    print("  ⚠️ [节点自愈] 监控面板将显示 blocked_by_config=missing_admin_token，请尽快在注册端与远程解题端统一补齐配置")
 
                 # 启动远程解题调度中心：统一管理预热与 direct path
                 solver_cluster = RemoteSolverCluster(

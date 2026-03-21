@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import httpx
@@ -55,6 +55,12 @@ class RemoteSolverNodeState:
     last_reinit_error: str = ""
     last_reinit_status: str = ""
     last_reinit_message: str = ""
+    last_reinit_mode: str = ""
+    last_reinit_trigger_summary: str = ""
+    last_force_reinit_at: float = 0.0
+    force_reinit_count: int = 0
+    last_rebuild_browser_count: int = 0
+    last_reinit_drained_indexes: list[int] = field(default_factory=list)
     reinit_in_progress: bool = False
     reinit_supported: bool = False
     reinit_cooldown_until: float = 0.0
@@ -152,6 +158,12 @@ class RemoteSolverNodeState:
             "last_reinit_error": self.last_reinit_error,
             "last_reinit_status": self.last_reinit_status,
             "last_reinit_message": self.last_reinit_message,
+            "last_reinit_mode": self.last_reinit_mode,
+            "last_reinit_trigger_summary": self.last_reinit_trigger_summary,
+            "last_force_reinit_at": round(self.last_force_reinit_at, 3) if self.last_force_reinit_at else 0.0,
+            "force_reinit_count": self.force_reinit_count,
+            "last_rebuild_browser_count": self.last_rebuild_browser_count,
+            "last_reinit_drained_indexes": list(self.last_reinit_drained_indexes),
             "reinit_in_progress": self.reinit_in_progress,
             "reinit_supported": self.reinit_supported,
             "reinit_cooldown_until": round(self.reinit_cooldown_until, 3) if self.reinit_cooldown_until else 0.0,
@@ -262,6 +274,7 @@ class RemoteSolverCluster:
         self.last_consume_at = 0.0
         self.last_queue_target = 0
         self.direct_unavailable_streak = 0
+        self.direct_unavailable_since = 0.0
         self.last_direct_unavailable_at = 0.0
         self.last_direct_unavailable_summary = ""
         self.last_token_success_at = 0.0
@@ -275,6 +288,14 @@ class RemoteSolverCluster:
         self.reinit_success_count = 0
         self.reinit_fail_count = 0
         self.reinit_skip_count = 0
+        self.reinit_blocked_by_config = self.reinit_enabled and not bool(self.admin_token)
+        self.reinit_block_reason = "missing_admin_token" if self.reinit_blocked_by_config else ""
+        self.last_reinit_skip_is_fatal = bool(self.reinit_blocked_by_config)
+        self.last_reinit_skip_advice = (
+            "请在注册端与远程解题端同时配置一致的 SOLVER_ADMIN_TOKEN"
+            if self.reinit_blocked_by_config else ""
+        )
+        self.last_reinit_effective_mode = ""
 
         self._reload_nodes()
 
@@ -290,12 +311,16 @@ class RemoteSolverCluster:
     async def _mark_token_success(self):
         async with self._state_lock:
             self.direct_unavailable_streak = 0
+            self.direct_unavailable_since = 0.0
             self.last_token_success_at = time.time()
 
     async def _mark_direct_unavailable(self, summary: str) -> int:
         async with self._state_lock:
+            now = time.time()
+            if self.direct_unavailable_streak <= 0 or self.direct_unavailable_since <= 0:
+                self.direct_unavailable_since = now
             self.direct_unavailable_streak += 1
-            self.last_direct_unavailable_at = time.time()
+            self.last_direct_unavailable_at = now
             self.last_direct_unavailable_summary = summary
             return self.direct_unavailable_streak
 
@@ -388,12 +413,15 @@ class RemoteSolverCluster:
         strategy: str,
     ) -> dict[str, Any]:
         started_at = time.time()
+        requested_mode = "soft"
+        allow_force = strategy == "targeted" and current_streak >= self.reinit_trigger_streak
         headers = {"Authorization": f"Bearer {self.admin_token}"} if self.admin_token else {}
         payload = {
             "reason": trigger_reason,
             "requested_by": self.reinit_requested_by,
             "source": "remote_solver_cluster",
-            "mode": strategy,
+            "mode": requested_mode,
+            "allow_force": allow_force,
             "trigger_summary": trigger_summary[:240],
             "direct_unavailable_streak": current_streak,
         }
@@ -417,6 +445,8 @@ class RemoteSolverCluster:
                 "reinitialize_already_running",
                 "reinitialize_cooldown",
                 "no_idle_browsers_to_reinitialize",
+                "force_reinit_not_allowed",
+                "reinitialize_delayed",
             }
             result_type = "success" if ok else ("skip" if message in skip_messages else "failed")
 
@@ -438,6 +468,24 @@ class RemoteSolverCluster:
                 state.last_reinit_error = str(data.get("last_reinit_error") or ("" if result_type != "failed" else message))
                 state.last_reinit_status = str(data.get("last_reinit_status") or result_type)
                 state.last_reinit_message = str(data.get("last_reinit_message") or message or state.last_reinit_message or "")
+                state.last_reinit_mode = str(data.get("last_reinit_mode") or state.last_reinit_mode or "")
+                state.last_reinit_trigger_summary = str(
+                    data.get("last_reinit_trigger_summary") or data.get("trigger_summary") or state.last_reinit_trigger_summary or ""
+                )
+                state.last_force_reinit_at = max(float(data.get("last_force_reinit_at", state.last_force_reinit_at) or 0.0), 0.0)
+                state.force_reinit_count = max(int(data.get("force_reinit_count", state.force_reinit_count) or 0), 0)
+                state.last_rebuild_browser_count = max(
+                    int(data.get("last_rebuild_browser_count", state.last_rebuild_browser_count) or 0),
+                    0,
+                )
+                drained_indexes = data.get("last_reinit_drained_indexes", state.last_reinit_drained_indexes)
+                if isinstance(drained_indexes, list):
+                    state.last_reinit_drained_indexes = []
+                    for item in drained_indexes:
+                        try:
+                            state.last_reinit_drained_indexes.append(int(item))
+                        except Exception:
+                            continue
                 state.reinit_in_progress = bool(data.get("reinit_in_progress", state.reinit_in_progress))
                 state.reinit_supported = bool(data.get("reinit_supported", state.reinit_supported or True))
                 state.reinit_cooldown_until = max(float(data.get("reinit_cooldown_until", state.reinit_cooldown_until) or 0.0), 0.0)
@@ -450,11 +498,13 @@ class RemoteSolverCluster:
                 node_label = state.node_label
                 last_status = state.last_reinit_status
                 last_message = state.last_reinit_message
+                last_mode = str(data.get("effective_mode") or state.last_reinit_mode or "")
+                last_rebuild_browser_count = state.last_rebuild_browser_count
 
             self._log(
                 f"[调度] {'✅' if result_type == 'success' else ('⚠️' if result_type == 'skip' else '❌')} "
-                f"节点 [{node_label or node_id or node_url}] 软初始化结果: {last_status or result_type}"
-                f"（HTTP {resp.status_code}，{last_message or message or 'no_message'}）"
+                f"节点 [{node_label or node_id or node_url}] 初始化结果: {last_status or result_type}"
+                f"（mode={last_mode or requested_mode}, HTTP {resp.status_code}，{last_message or message or 'no_message'}）"
             )
             return {
                 "node_url": node_url,
@@ -465,6 +515,11 @@ class RemoteSolverCluster:
                 "http_status": resp.status_code,
                 "result_type": result_type,
                 "message": message,
+                "requested_mode": requested_mode,
+                "allow_force": allow_force,
+                "last_reinit_mode": state.last_reinit_mode,
+                "effective_mode": last_mode,
+                "last_rebuild_browser_count": last_rebuild_browser_count,
                 "last_reinit_status": last_status,
                 "last_reinit_message": last_message,
                 "requested_at": round(started_at, 3),
@@ -510,6 +565,11 @@ class RemoteSolverCluster:
                 self.last_reinit_results = []
                 self.last_reinit_summary = trigger_summary
                 self.last_reinit_trigger_streak = current_streak
+                self.reinit_blocked_by_config = True
+                self.reinit_block_reason = "missing_admin_token"
+                self.last_reinit_skip_is_fatal = True
+                self.last_reinit_skip_advice = "请在注册端与远程解题端同时配置一致的 SOLVER_ADMIN_TOKEN"
+                self.last_reinit_effective_mode = ""
             self._log("[调度] ⚠️ 已达到软初始化触发阈值，但未配置 SOLVER_ADMIN_TOKEN，跳过本轮远程软初始化")
             return
 
@@ -524,6 +584,10 @@ class RemoteSolverCluster:
                     self.last_reinit_results = []
                     self.last_reinit_summary = trigger_summary
                     self.last_reinit_trigger_streak = current_streak
+                    self.reinit_blocked_by_config = False
+                    self.reinit_block_reason = "cluster_reinit_cooldown"
+                    self.last_reinit_skip_is_fatal = False
+                    self.last_reinit_skip_advice = "等待调度器冷却结束后会自动再次尝试远程软初始化"
             if cooldown_remaining > 0:
                 self._log(f"[调度] ⏱️ 软初始化仍在冷却中，剩余 {round(cooldown_remaining, 1)}s，本轮跳过")
                 return
@@ -537,6 +601,10 @@ class RemoteSolverCluster:
                     self.last_reinit_results = []
                     self.last_reinit_summary = trigger_summary
                     self.last_reinit_trigger_streak = current_streak
+                    self.reinit_blocked_by_config = False
+                    self.reinit_block_reason = "no_reachable_reinit_targets"
+                    self.last_reinit_skip_is_fatal = False
+                    self.last_reinit_skip_advice = "当前仅剩完全离线或未暴露管理接口的节点，需要平台层重启或修复节点可达性"
                 self._log(
                     f"[调度] ⚠️ 已连续 {current_streak} 次无 direct 候选，但当前没有可达且支持软初始化的异常节点；"
                     "完全离线节点需交给平台层兜底"
@@ -553,11 +621,16 @@ class RemoteSolverCluster:
                 self.last_reinit_summary = trigger_summary
                 self.last_reinit_trigger_streak = current_streak
                 self.reinit_attempt_count += 1
+                self.reinit_blocked_by_config = False
+                self.reinit_block_reason = ""
+                self.last_reinit_skip_is_fatal = False
+                self.last_reinit_skip_advice = ""
+                self.last_reinit_effective_mode = ""
 
             display_targets = ", ".join(self._node_display_name(state) for state in targets)
             self._log(
                 f"[调度] 🛠️ 已连续 {current_streak} 次无 direct 候选，准备对 {len(targets)} 个"
-                f"{'在线节点' if strategy == 'broadcast' else '异常节点'}执行软初始化: {display_targets}"
+                f"{'在线节点' if strategy == 'broadcast' else '异常节点'}执行远程初始化: {display_targets}"
             )
             results = await asyncio.gather(
                 *[
@@ -606,14 +679,23 @@ class RemoteSolverCluster:
                 else:
                     fail_count += 1
 
+            effective_modes = {
+                str(item.get("effective_mode") or item.get("last_reinit_mode") or "").strip().lower()
+                for item in normalized_results
+                if str(item.get("effective_mode") or item.get("last_reinit_mode") or "").strip().lower() in {"soft", "force"}
+            }
+            cluster_effective_mode = "force" if "force" in effective_modes else ("soft" if "soft" in effective_modes else "")
+
             async with self._state_lock:
                 self.reinit_success_count += success_count
                 self.reinit_fail_count += fail_count
                 self.reinit_skip_count += skip_count
                 self.last_reinit_results = normalized_results
+                self.last_reinit_effective_mode = cluster_effective_mode
 
             self._log(
-                f"[调度] 🧩 节点软初始化完成: success={success_count}, skip={skip_count}, fail={fail_count}"
+                f"[调度] 🧩 节点远程初始化完成: mode={cluster_effective_mode or 'unknown'}, "
+                f"success={success_count}, skip={skip_count}, fail={fail_count}"
             )
 
     def _derive_health_status(self, health_score: int, available_browsers: int) -> str:
@@ -745,6 +827,24 @@ class RemoteSolverCluster:
                 state.last_reinit_error = str(data.get("last_reinit_error") or state.last_reinit_error or "")
                 state.last_reinit_status = str(data.get("last_reinit_status") or state.last_reinit_status or "")
                 state.last_reinit_message = str(data.get("last_reinit_message") or state.last_reinit_message or "")
+                state.last_reinit_mode = str(data.get("last_reinit_mode") or state.last_reinit_mode or "")
+                state.last_reinit_trigger_summary = str(
+                    data.get("last_reinit_trigger_summary") or data.get("trigger_summary") or state.last_reinit_trigger_summary or ""
+                )
+                state.last_force_reinit_at = max(float(data.get("last_force_reinit_at", state.last_force_reinit_at) or 0.0), 0.0)
+                state.force_reinit_count = max(int(data.get("force_reinit_count", state.force_reinit_count) or 0), 0)
+                state.last_rebuild_browser_count = max(
+                    int(data.get("last_rebuild_browser_count", state.last_rebuild_browser_count) or 0),
+                    0,
+                )
+                drained_indexes = data.get("last_reinit_drained_indexes", state.last_reinit_drained_indexes)
+                if isinstance(drained_indexes, list):
+                    state.last_reinit_drained_indexes = []
+                    for item in drained_indexes:
+                        try:
+                            state.last_reinit_drained_indexes.append(int(item))
+                        except Exception:
+                            continue
                 state.reinit_in_progress = bool(data.get("reinit_in_progress", state.reinit_in_progress))
                 state.reinit_supported = bool(data.get("reinit_supported", state.reinit_supported))
                 state.reinit_cooldown_until = max(float(data.get("reinit_cooldown_until", state.reinit_cooldown_until) or 0.0), 0.0)
@@ -1284,9 +1384,23 @@ class RemoteSolverCluster:
                 sum(state.health_score for state in states if state.online) / online_nodes,
                 3,
             ) if online_nodes else 0.0
+            reinit_last_failed_targets = [
+                str(item.get("node_url") or item.get("node_label") or item.get("node_id") or "")
+                for item in self.last_reinit_results
+                if str(item.get("result_type") or "failed") not in {"success", "skip"}
+                and str(item.get("node_url") or item.get("node_label") or item.get("node_id") or "")
+            ]
             cluster_reinit = {
                 "enabled": self.reinit_enabled,
                 "admin_configured": bool(self.admin_token),
+                "available": self.reinit_enabled and bool(self.admin_token),
+                "blocked_by_config": self.reinit_blocked_by_config,
+                "block_reason": self.reinit_block_reason,
+                "last_skip_is_fatal": self.last_reinit_skip_is_fatal,
+                "last_skip_advice": self.last_reinit_skip_advice,
+                "last_effective_mode": self.last_reinit_effective_mode,
+                "last_effective_targets": list(self.last_reinit_targets),
+                "last_failed_targets": reinit_last_failed_targets,
                 "trigger_streak": self.reinit_trigger_streak,
                 "cooldown_seconds": round(self.reinit_cooldown_seconds, 3),
                 "cooldown_remaining": round(self._cluster_reinit_cooldown_remaining(), 3),
@@ -1320,9 +1434,17 @@ class RemoteSolverCluster:
             "last_fill_at": self.last_fill_at,
             "last_consume_at": self.last_consume_at,
             "direct_unavailable_streak": self.direct_unavailable_streak,
+            "direct_last_unavailable_since": round(self.direct_unavailable_since, 3) if self.direct_unavailable_since else 0.0,
+            "direct_last_unavailable_summary": self.last_direct_unavailable_summary,
             "last_direct_unavailable_at": round(self.last_direct_unavailable_at, 3) if self.last_direct_unavailable_at else 0.0,
             "last_direct_unavailable_summary": self.last_direct_unavailable_summary,
             "last_token_success_at": round(self.last_token_success_at, 3) if self.last_token_success_at else 0.0,
+            "reinit_available": cluster_reinit["available"],
+            "reinit_blocked_by_config": cluster_reinit["blocked_by_config"],
+            "reinit_block_reason": cluster_reinit["block_reason"],
+            "reinit_last_effective_mode": cluster_reinit["last_effective_mode"],
+            "reinit_last_effective_targets": list(cluster_reinit["last_effective_targets"]),
+            "reinit_last_failed_targets": list(cluster_reinit["last_failed_targets"]),
             "reinit": cluster_reinit,
             "summary": {
                 "online_nodes": online_nodes,
