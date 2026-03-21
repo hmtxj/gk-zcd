@@ -1225,8 +1225,39 @@
                                             {{ solverStatus.running ? '调度中' : '已停止' }}
                                         </span>
                                         <span class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border"
+                                            :class="solverStatus.heartbeat_running ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-600 border-slate-200'">
+                                            {{ solverStatus.heartbeat_running ? `心跳
+                                            ${Number(solverStatus.heartbeat_interval_seconds ||
+                                            solverStatus.scheduler.heartbeat_interval_seconds || 0).toFixed(1)}s` :
+                                            '心跳暂停' }}
+                                        </span>
+                                        <span v-if="solverStatus.drain_in_progress"
+                                            class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border bg-amber-50 text-amber-700 border-amber-200">
+                                            远程排空中
+                                        </span>
+                                        <span class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border"
                                             :class="Number(solverStatus.summary.avg_health_score || 0) >= 80 ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : (Number(solverStatus.summary.avg_health_score || 0) >= 60 ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-rose-50 text-rose-700 border-rose-200')">
                                             健康均值 {{ Number(solverStatus.summary.avg_health_score || 0).toFixed(1) }}
+                                        </span>
+                                        <span v-if="solverStatus.summary.draining_nodes > 0"
+                                            class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border bg-amber-50 text-amber-700 border-amber-200">
+                                            排空 {{ solverStatus.summary.draining_nodes }}
+                                        </span>
+                                        <span v-if="solverStatus.summary.standby_nodes > 0"
+                                            class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border bg-sky-50 text-sky-700 border-sky-200">
+                                            待机 {{ solverStatus.summary.standby_nodes }}
+                                        </span>
+                                        <span v-if="solverStatus.summary.reinitializing_nodes > 0"
+                                            class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border bg-violet-50 text-violet-700 border-violet-200">
+                                            重建 {{ solverStatus.summary.reinitializing_nodes }}
+                                        </span>
+                                        <span v-if="solverStatus.summary.lease_expired_nodes > 0"
+                                            class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border bg-rose-50 text-rose-700 border-rose-200">
+                                            租约过期 {{ solverStatus.summary.lease_expired_nodes }}
+                                        </span>
+                                        <span v-if="solverStatus.summary.accepting_disabled_nodes > 0"
+                                            class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border bg-slate-50 text-slate-700 border-slate-200">
+                                            停收 {{ solverStatus.summary.accepting_disabled_nodes }}
                                         </span>
                                         <span v-if="solverStatus.summary.recovering_nodes > 0"
                                             class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border bg-violet-50 text-violet-700 border-violet-200">
@@ -1243,6 +1274,12 @@
                                         <span v-if="solverStatus.summary.busy_nodes > 0"
                                             class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border bg-amber-50 text-amber-700 border-amber-200">
                                             忙碌 {{ solverStatus.summary.busy_nodes }}
+                                        </span>
+                                        <span
+                                            v-if="solverStatus.control && solverStatus.control.status && solverStatus.control.status !== 'idle'"
+                                            class="text-[12px] px-2 py-0.5 rounded font-medium opacity-90 border"
+                                            :class="solverControlBadgeClass(solverStatus.control.status)">
+                                            控制 {{ solverControlText(solverStatus.control.status) }}
                                         </span>
                                     </div>
                                 </div>
@@ -1371,6 +1408,31 @@
                                                     solverStatus.token_queue.per_node_prefetch ||
                                                     solverStatus.scheduler.per_node_prefetch || 0 }}/node</div>
                                             </div>
+                                            <div class="rounded-lg bg-white border border-gray-100 px-3 py-2">
+                                                <div class="text-gray-400">active</div>
+                                                <div class="font-semibold text-gray-800">{{
+                                                    solverStatus.summary.active_nodes || 0 }}</div>
+                                            </div>
+                                            <div class="rounded-lg bg-white border border-gray-100 px-3 py-2">
+                                                <div class="text-gray-400">draining</div>
+                                                <div class="font-semibold text-gray-800">{{
+                                                    solverStatus.summary.draining_nodes || 0 }}</div>
+                                            </div>
+                                            <div class="rounded-lg bg-white border border-gray-100 px-3 py-2">
+                                                <div class="text-gray-400">standby</div>
+                                                <div class="font-semibold text-gray-800">{{
+                                                    solverStatus.summary.standby_nodes || 0 }}</div>
+                                            </div>
+                                            <div class="rounded-lg bg-white border border-gray-100 px-3 py-2">
+                                                <div class="text-gray-400">accept-off</div>
+                                                <div class="font-semibold text-gray-800">{{
+                                                    solverStatus.summary.accepting_disabled_nodes || 0 }}</div>
+                                            </div>
+                                            <div class="rounded-lg bg-white border border-gray-100 px-3 py-2">
+                                                <div class="text-gray-400">lease-expired</div>
+                                                <div class="font-semibold text-gray-800">{{
+                                                    solverStatus.summary.lease_expired_nodes || 0 }}</div>
+                                            </div>
                                         </div>
 
                                         <div class="flex items-center gap-2">
@@ -1428,7 +1490,7 @@
                                             </div>
                                         </div>
 
-                                        <div class="grid grid-cols-1 xl:grid-cols-3 gap-3 text-[12px]">
+                                        <div class="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-3 text-[12px]">
                                             <div class="rounded-lg border px-3 py-3"
                                                 :class="solverStatus.reinit.blocked_by_config ? 'bg-rose-50 border-rose-100' : (solverStatus.reinit.available ? 'bg-emerald-50 border-emerald-100' : 'bg-slate-50 border-slate-100')">
                                                 <div class="flex items-center justify-between gap-2">
@@ -1444,15 +1506,19 @@
                                                 <div class="mt-2 text-[11px] text-gray-600 leading-5">
                                                     <div>mode <span class="font-mono">{{
                                                             solverStatus.reinit.last_effective_mode ||
-                                                            solverStatus.solver_diagnostics.reinit_last_effective_mode ||
+                                                            solverStatus.solver_diagnostics.reinit_last_effective_mode
+                                                            ||
                                                             '--' }}</span> · skip {{ solverStatus.reinit.skip_count ||
                                                         solverStatus.solver_diagnostics.reinit_skipped_count || 0 }} ·
                                                         fail {{ solverStatus.reinit.fail_count ||
-                                                        solverStatus.solver_diagnostics.reinit_failed_count || 0 }}</div>
+                                                        solverStatus.solver_diagnostics.reinit_failed_count || 0 }}
+                                                    </div>
                                                     <div class="mt-1">cooldown <span class="font-mono">{{
-                                                            Number(solverStatus.reinit.cooldown_remaining || 0).toFixed(1)
+                                                            Number(solverStatus.reinit.cooldown_remaining ||
+                                                            0).toFixed(1)
                                                             }}s</span> · streak <span class="font-mono">{{
-                                                            solverStatus.reinit.last_reinit_trigger_streak || 0 }}</span>
+                                                            solverStatus.reinit.last_reinit_trigger_streak || 0
+                                                            }}</span>
                                                     </div>
                                                     <div class="mt-1 text-gray-500">targets: <span class="font-mono">{{
                                                             Array.isArray(solverStatus.reinit.last_effective_targets) &&
@@ -1476,21 +1542,25 @@
                                                         网络诊断</div>
                                                     <span class="text-[10px] px-2 py-0.5 rounded-full border"
                                                         :class="solverStatus.network_diagnostics.preflight_ok === true ? 'bg-white text-emerald-700 border-emerald-200' : (solverStatus.network_diagnostics.preflight_ok === false ? 'bg-white text-rose-700 border-rose-200' : 'bg-white text-slate-600 border-slate-200')">
-                                                        {{ solverStatus.network_diagnostics.preflight_ok === true ? 'preflight-ok'
+                                                        {{ solverStatus.network_diagnostics.preflight_ok === true ?
+                                                        'preflight-ok'
                                                         : (solverStatus.network_diagnostics.preflight_ok === false ?
                                                         'preflight-fail' : 'preflight-n/a') }}
                                                     </span>
                                                 </div>
                                                 <div class="mt-2 text-[11px] text-gray-600 leading-5">
                                                     <div>tls <span class="font-mono">{{
-                                                            solverStatus.network_diagnostics.tls_error_count || 0 }}</span>
+                                                            solverStatus.network_diagnostics.tls_error_count || 0
+                                                            }}</span>
                                                         · signup <span class="font-mono">{{
-                                                            solverStatus.network_diagnostics.signup_preflight_error_count ||
+                                                            solverStatus.network_diagnostics.signup_preflight_error_count
+                                                            ||
                                                             0 }}</span></div>
                                                     <div class="mt-1">step0 timeout <span class="font-mono">{{
                                                             solverStatus.network_diagnostics.step0_timeout_count || 0
                                                             }}</span> · abort <span class="font-mono">{{
-                                                            solverStatus.network_diagnostics.abort_reason || '--' }}</span>
+                                                            solverStatus.network_diagnostics.abort_reason || '--'
+                                                            }}</span>
                                                     </div>
                                                 </div>
                                                 <div class="mt-2 text-[11px] leading-5 text-gray-500">
@@ -1509,12 +1579,14 @@
                                                     <span class="text-[10px] px-2 py-0.5 rounded-full border"
                                                         :class="(solverStatus.solver_diagnostics.solver_no_candidate_count || 0) > 0 ? 'bg-white text-violet-700 border-violet-200' : 'bg-white text-slate-600 border-slate-200'">
                                                         no-candidate {{
-                                                        solverStatus.solver_diagnostics.solver_no_candidate_count || 0 }}
+                                                        solverStatus.solver_diagnostics.solver_no_candidate_count || 0
+                                                        }}
                                                     </span>
                                                 </div>
                                                 <div class="mt-2 text-[11px] text-gray-600 leading-5">
                                                     <div>mode <span class="font-mono">{{
-                                                            solverStatus.solver_diagnostics.reinit_last_effective_mode ||
+                                                            solverStatus.solver_diagnostics.reinit_last_effective_mode
+                                                            ||
                                                             solverStatus.reinit.last_effective_mode || '--' }}</span> ·
                                                         since <span class="font-mono">{{
                                                             formatTimestampAge(solverStatus.solver_diagnostics.direct_last_unavailable_since)
@@ -1525,13 +1597,116 @@
                                                             &&
                                                             solverStatus.solver_diagnostics.reinit_last_failed_targets.length
                                                             > 0 ?
-                                                            solverStatus.solver_diagnostics.reinit_last_failed_targets.join(', ')
+                                                            solverStatus.solver_diagnostics.reinit_last_failed_targets.join(',
+                                                            ')
                                                             : '--' }}</span></div>
                                                 </div>
                                                 <div class="mt-2 text-[11px] leading-5 text-gray-500">
-                                                    {{ solverStatus.solver_diagnostics.direct_last_unavailable_summary ||
+                                                    {{ solverStatus.solver_diagnostics.direct_last_unavailable_summary
+                                                    ||
                                                     solverStatus.solver_diagnostics.last_solver_cluster_error ||
                                                     '暂无 Solver 集群异常' }}
+                                                </div>
+                                            </div>
+
+                                            <div class="rounded-lg border px-3 py-3"
+                                                :class="solverStatus.drain_in_progress ? 'bg-amber-50 border-amber-100' : ((solverStatus.summary.standby_nodes || 0) > 0 ? 'bg-sky-50 border-sky-100' : 'bg-emerald-50 border-emerald-100')">
+                                                <div class="flex items-center justify-between gap-2">
+                                                    <div class="text-[11px] font-semibold"
+                                                        :class="solverStatus.drain_in_progress ? 'text-amber-700' : (((solverStatus.summary.standby_nodes || 0) > 0 || (solverStatus.summary.accepting_disabled_nodes || 0) > 0) ? 'text-sky-700' : 'text-emerald-700')">
+                                                        生命周期治理</div>
+                                                    <span class="text-[10px] px-2 py-0.5 rounded-full border"
+                                                        :class="solverLifecycleBadgeClass(solverStatus.drain_in_progress ? 'draining' : (((solverStatus.summary.standby_nodes || 0) > 0 || (solverStatus.summary.accepting_disabled_nodes || 0) > 0) ? 'standby' : 'active'))">
+                                                        {{ solverStatus.drain_in_progress ? 'draining' :
+                                                        (((solverStatus.summary.standby_nodes || 0) > 0 ||
+                                                        (solverStatus.summary.accepting_disabled_nodes || 0) > 0) ?
+                                                        'managed' : 'active') }}
+                                                    </span>
+                                                </div>
+                                                <div class="mt-2 text-[11px] text-gray-600 leading-5">
+                                                    <div>active <span class="font-mono">{{
+                                                            solverStatus.summary.active_nodes || 0 }}</span> · draining
+                                                        <span class="font-mono">{{ solverStatus.summary.draining_nodes
+                                                            || 0 }}</span></div>
+                                                    <div class="mt-1">standby <span class="font-mono">{{
+                                                            solverStatus.summary.standby_nodes || 0 }}</span> · reinit
+                                                        <span class="font-mono">{{
+                                                            solverStatus.summary.reinitializing_nodes || 0 }}</span>
+                                                    </div>
+                                                    <div class="mt-1">offline <span class="font-mono">{{
+                                                            solverStatus.summary.offline_nodes || 0 }}</span> ·
+                                                        accept-off <span class="font-mono">{{
+                                                            solverStatus.summary.accepting_disabled_nodes || 0 }}</span>
+                                                    </div>
+                                                </div>
+                                                <div class="mt-2 text-[11px] leading-5 text-gray-500">
+                                                    {{ solverStatus.drain_in_progress ? '集群正在执行远程排空，新的任务分发会持续收敛。' :
+                                                    '当前未检测到主动排空窗口。' }}
+                                                </div>
+                                            </div>
+
+                                            <div class="rounded-lg border px-3 py-3"
+                                                :class="solverStatus.last_drain_at ? 'bg-amber-50 border-amber-100' : 'bg-sky-50 border-sky-100'">
+                                                <div class="flex items-center justify-between gap-2">
+                                                    <div class="text-[11px] font-semibold"
+                                                        :class="solverStatus.last_drain_at ? 'text-amber-700' : 'text-sky-700'">
+                                                        排空 / 恢复 / 续租</div>
+                                                    <span class="text-[10px] px-2 py-0.5 rounded-full border"
+                                                        :class="solverStatus.heartbeat_running ? 'bg-white text-emerald-700 border-emerald-200' : 'bg-white text-slate-600 border-slate-200'">
+                                                        {{ solverStatus.heartbeat_running ? 'heartbeat-on' :
+                                                        'heartbeat-off' }}
+                                                    </span>
+                                                </div>
+                                                <div class="mt-2 text-[11px] text-gray-600 leading-5">
+                                                    <div>drain <span class="font-mono">{{
+                                                            formatTimestampAge(solverStatus.last_drain_at) }}</span> ·
+                                                        reason <span class="font-mono">{{ solverStatus.last_drain_reason
+                                                            || '--' }}</span></div>
+                                                    <div class="mt-1">resume <span class="font-mono">{{
+                                                            formatTimestampAge(solverStatus.last_resume_at) }}</span> ·
+                                                        reason <span class="font-mono">{{
+                                                            solverStatus.last_resume_reason || '--' }}</span></div>
+                                                    <div class="mt-1">lease <span class="font-mono">{{
+                                                            formatTimestampAge(solverStatus.last_lease_at) }}</span> ·
+                                                        ttl <span class="font-mono">{{
+                                                            formatDurationSeconds(solverStatus.scheduler.lease_ttl_seconds
+                                                            || 0) }}</span></div>
+                                                </div>
+                                                <div class="mt-2 text-[11px] leading-5 text-gray-500">
+                                                    D{{ (solverStatus.last_drain_targets || []).length }} / R{{
+                                                    (solverStatus.last_resume_targets || []).length }} / L{{
+                                                    (solverStatus.last_lease_targets || []).length }} · grace {{
+                                                    formatDurationSeconds(solverStatus.scheduler.drain_grace_seconds ||
+                                                    solverStatus.drain.grace_seconds || 0) }}
+                                                </div>
+                                            </div>
+
+                                            <div class="rounded-lg border px-3 py-3"
+                                                :class="solverControlBadgeClass(solverStatus.control.status)">
+                                                <div class="flex items-center justify-between gap-2">
+                                                    <div class="text-[11px] font-semibold">控制通道</div>
+                                                    <span
+                                                        class="text-[10px] px-2 py-0.5 rounded-full border bg-white border-current/20">
+                                                        {{ solverControlText(solverStatus.control.status) }}
+                                                    </span>
+                                                </div>
+                                                <div class="mt-2 text-[11px] text-gray-700 leading-5">
+                                                    <div>action <span class="font-mono">{{ solverStatus.control.action
+                                                            || '--' }}</span> · by <span class="font-mono">{{
+                                                            solverStatus.control.requested_by || '--' }}</span></div>
+                                                    <div class="mt-1">req <span class="font-mono">{{
+                                                            formatTimestampAge(solverStatus.control.requested_at)
+                                                            }}</span> · done <span class="font-mono">{{
+                                                            formatTimestampAge(solverStatus.control.finished_at)
+                                                            }}</span></div>
+                                                    <div class="mt-1">grace <span class="font-mono">{{
+                                                            formatDurationSeconds(solverStatus.control.grace_seconds ||
+                                                            0) }}</span> · pid <span class="font-mono">{{
+                                                            solverStatus.control.target_pid || '--' }}</span></div>
+                                                </div>
+                                                <div class="mt-2 text-[11px] leading-5 opacity-80">
+                                                    {{ solverStatus.control.message || solverStatus.control.reason ||
+                                                    '当前未收到新的控制请求' }}
                                                 </div>
                                             </div>
                                         </div>
@@ -1541,7 +1716,7 @@
                                         <div class="flex items-center justify-between gap-3 flex-wrap">
                                             <div>
                                                 <div class="text-[12px] font-semibold text-gray-700">节点明细</div>
-                                                <div class="text-[11px] text-gray-400 mt-1">展示最近阶段、错误、自愈状态与并发占用</div>
+                                                <div class="text-[11px] text-gray-400 mt-1">展示生命周期、租约、排空、自愈状态与并发占用</div>
                                             </div>
                                             <div class="text-[11px] text-gray-400">{{ solverStatus.nodes.length }} nodes
                                             </div>
@@ -1576,13 +1751,28 @@
                                                             :class="solverHealthBadgeClass(node.health_status, node.online)">
                                                             {{ solverHealthText(node.health_status, node.online) }}
                                                         </span>
+                                                        <span class="text-[10px] px-2 py-0.5 rounded-full border"
+                                                            :class="solverLifecycleBadgeClass(node.lifecycle_state)">
+                                                            {{ node.lifecycle_state || 'unknown' }}
+                                                        </span>
                                                         <span
                                                             class="text-[10px] px-2 py-0.5 rounded-full border bg-slate-50 text-slate-700 border-slate-200">H{{
                                                             node.health_score || 0 }}</span>
+                                                        <span
+                                                            v-if="!node.accepting_new_tasks || node.accepting_disabled"
+                                                            class="text-[10px] px-2 py-0.5 rounded-full border bg-slate-50 text-slate-700 border-slate-200">accepting-off</span>
                                                         <span v-if="isNodeDirectReady(node)"
                                                             class="text-[10px] px-2 py-0.5 rounded-full border bg-sky-50 text-sky-700 border-sky-200">direct-ready</span>
                                                         <span v-if="isNodePrefetchReady(node)"
                                                             class="text-[10px] px-2 py-0.5 rounded-full border bg-green-50 text-green-700 border-green-200">prefetch-ready</span>
+                                                        <span v-if="node.lease_expired"
+                                                            class="text-[10px] px-2 py-0.5 rounded-full border bg-rose-50 text-rose-700 border-rose-200">lease-expired</span>
+                                                        <span v-else-if="Number(node.lease_remaining_seconds || 0) > 0"
+                                                            class="text-[10px] px-2 py-0.5 rounded-full border bg-sky-50 text-sky-700 border-sky-200">lease
+                                                            {{ formatDurationSeconds(node.lease_remaining_seconds)
+                                                            }}</span>
+                                                        <span v-if="node.standby_auto_resume"
+                                                            class="text-[10px] px-2 py-0.5 rounded-full border bg-indigo-50 text-indigo-700 border-indigo-200">auto-resume</span>
                                                         <span v-if="node.soft_penalty_active"
                                                             class="text-[10px] px-2 py-0.5 rounded-full border bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200">soft
                                                             {{ Math.ceil(node.soft_penalty_remaining || 0) }}s</span>
@@ -1600,7 +1790,7 @@
                                                 </div>
 
                                                 <div
-                                                    class="grid grid-cols-2 gap-x-3 gap-y-1 mt-3 text-[11px] text-gray-500 font-mono">
+                                                    class="grid grid-cols-2 xl:grid-cols-3 gap-x-3 gap-y-1 mt-3 text-[11px] text-gray-500 font-mono">
                                                     <div>cap {{ node.available_browsers }}/{{ node.total_browsers }}
                                                     </div>
                                                     <div>raw {{ node.raw_available_browsers }} · reserve {{
@@ -1616,6 +1806,32 @@
                                                         node.recent_captcha_fail_count || 0 }}</div>
                                                     <div>mem {{ Number(node.memory_mb || 0).toFixed(1) }}MB · eff {{
                                                         node.effective_capacity || 0 }}</div>
+                                                    <div>life {{ node.lifecycle_state || '--' }} · accept {{
+                                                        node.accepting_new_tasks ? 'on' : 'off' }}</div>
+                                                    <div>idle {{ formatDurationSeconds(node.idle_seconds) }} · since {{
+                                                        formatTimestampAge(node.idle_since) }}</div>
+                                                    <div>task in {{ formatTimestampAge(node.last_task_received_at) }} ·
+                                                        out {{
+                                                        formatTimestampAge(node.last_task_finished_at) }}</div>
+                                                    <div>lease {{ node.lease_expired ? 'expired' :
+                                                        formatDurationSeconds(node.lease_remaining_seconds) }} · owner
+                                                        {{
+                                                        node.lease_owner ? 'set' : '--' }}</div>
+                                                    <div>drain req {{ formatTimestampAge(node.drain_requested_at) }} ·
+                                                        done {{
+                                                        formatTimestampAge(node.drain_finished_at) }}</div>
+                                                    <div>standby {{ formatTimestampAge(node.standby_entered_at) }} ·
+                                                        auto {{
+                                                        node.standby_auto_resume ? 'on' : 'off' }}</div>
+                                                </div>
+
+                                                <div v-if="node.standby_reason || node.lease_owner"
+                                                    class="mt-3 rounded-md px-3 py-2 text-[11px] bg-sky-50 text-sky-700 border border-sky-100">
+                                                    <div v-if="node.standby_reason">{{ node.standby_reason }}</div>
+                                                    <div v-if="node.lease_owner"
+                                                        class="mt-1 font-mono text-[10px] opacity-80">
+                                                        lease-owner {{ node.lease_owner }}
+                                                    </div>
                                                 </div>
 
                                                 <div v-if="node.reinit_in_progress || node.last_reinit_status || node.last_reinit_mode || Number(node.force_reinit_count || 0) > 0 || Number(node.last_rebuild_browser_count || 0) > 0"
@@ -1641,11 +1857,13 @@
                                                         </span>
                                                         <span v-if="Number(node.reinit_cooldown_remaining || 0) > 0"
                                                             class="px-2 py-0.5 rounded-full border text-[10px] bg-white border-gray-200">
-                                                            cooldown {{ Math.ceil(node.reinit_cooldown_remaining || 0) }}s
+                                                            cooldown {{ Math.ceil(node.reinit_cooldown_remaining || 0)
+                                                            }}s
                                                         </span>
                                                     </div>
                                                     <div class="mt-2 font-mono text-[10px] opacity-80">
-                                                        req {{ formatTimestampAge(node.last_reinit_request_at) }} · done {{
+                                                        req {{ formatTimestampAge(node.last_reinit_request_at) }} · done
+                                                        {{
                                                         formatTimestampAge(node.last_reinit_finished_at) }} · force {{
                                                         formatTimestampAge(node.last_force_reinit_at) }}
                                                     </div>
@@ -1653,7 +1871,8 @@
                                                         class="mt-1">
                                                         drain {{ node.last_reinit_drained_indexes.join(', ') }}
                                                     </div>
-                                                    <div v-if="node.last_reinit_trigger_summary" class="mt-1 leading-5">{{
+                                                    <div v-if="node.last_reinit_trigger_summary" class="mt-1 leading-5">
+                                                        {{
                                                         node.last_reinit_trigger_summary }}</div>
                                                     <div v-else-if="node.last_reinit_message" class="mt-1 leading-5">{{
                                                         node.last_reinit_message }}</div>
@@ -2862,6 +3081,13 @@
                         total_memory_mb: 0,
                         busy_nodes: 0,
                         breaker_nodes: 0,
+                        active_nodes: 0,
+                        draining_nodes: 0,
+                        standby_nodes: 0,
+                        reinitializing_nodes: 0,
+                        offline_nodes: 0,
+                        accepting_disabled_nodes: 0,
+                        lease_expired_nodes: 0,
                     },
                     token_queue: {
                         queue_target: 0,
@@ -2908,6 +3134,10 @@
                         per_node_prefetch: 0,
                         max_queue_target: 0,
                         queue_capacity: 0,
+                        drain_on_batch_finish: false,
+                        drain_grace_seconds: 0,
+                        heartbeat_interval_seconds: 0,
+                        lease_ttl_seconds: 0,
                     },
                     reinit: {
                         enabled: false,
@@ -2962,6 +3192,68 @@
                         reinit_last_advice: '',
                         direct_last_unavailable_summary: '',
                         direct_last_unavailable_since: 0,
+                    },
+                    drain_in_progress: false,
+                    last_drain_at: 0,
+                    last_drain_reason: '',
+                    last_drain_targets: [],
+                    last_drain_results: [],
+                    last_resume_at: 0,
+                    last_resume_reason: '',
+                    last_resume_targets: [],
+                    last_resume_results: [],
+                    last_lease_at: 0,
+                    last_lease_targets: [],
+                    last_lease_results: [],
+                    heartbeat_running: false,
+                    heartbeat_interval_seconds: 0,
+                    drain: {
+                        in_progress: false,
+                        reason: '',
+                        requested_by: '',
+                        started_at: 0,
+                        finished_at: 0,
+                        grace_seconds: 0,
+                        targets: [],
+                        results: [],
+                    },
+                    resume: {
+                        reason: '',
+                        requested_by: '',
+                        started_at: 0,
+                        finished_at: 0,
+                        targets: [],
+                        results: [],
+                    },
+                    lease: {
+                        reason: '',
+                        requested_by: '',
+                        started_at: 0,
+                        finished_at: 0,
+                        targets: [],
+                        results: [],
+                    },
+                    lifecycle: {
+                        updated_at: 0,
+                        counts: {},
+                        states: {},
+                    },
+                    control: {
+                        request_id: '',
+                        action: '',
+                        status: 'idle',
+                        requested_at: 0,
+                        requested_by: '',
+                        reason: '',
+                        grace_seconds: 0,
+                        enter_standby: true,
+                        graceful: true,
+                        shutdown_after_drain: true,
+                        target_pid: 0,
+                        handled_at: 0,
+                        finished_at: 0,
+                        message: '',
+                        result: {},
                     },
                     nodes: []
                 })
@@ -3065,8 +3357,53 @@
                     return normalized
                 }
 
+                const solverLifecycleBadgeClass = (state) => {
+                    const normalized = String(state || '').toLowerCase()
+                    if (normalized === 'active') return 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    if (normalized === 'draining') return 'bg-amber-50 text-amber-700 border-amber-200'
+                    if (normalized === 'standby') return 'bg-sky-50 text-sky-700 border-sky-200'
+                    if (normalized === 'reinitializing') return 'bg-violet-50 text-violet-700 border-violet-200'
+                    if (normalized === 'offline') return 'bg-gray-100 text-gray-500 border-gray-200'
+                    return 'bg-slate-50 text-slate-600 border-slate-200'
+                }
+
+                const solverControlBadgeClass = (status) => {
+                    const normalized = String(status || '').toLowerCase()
+                    if (normalized === 'done') return 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    if (normalized === 'requested' || normalized === 'pending') return 'bg-sky-50 text-sky-700 border-sky-200'
+                    if (normalized === 'processing') return 'bg-amber-50 text-amber-700 border-amber-200'
+                    if (normalized === 'forced' || normalized === 'failed') return 'bg-rose-50 text-rose-700 border-rose-200'
+                    if (normalized === 'ignored') return 'bg-slate-50 text-slate-700 border-slate-200'
+                    return 'bg-gray-100 text-gray-500 border-gray-200'
+                }
+
+                const solverControlText = (status) => {
+                    const normalized = String(status || '').toLowerCase()
+                    if (normalized === 'requested') return '已请求'
+                    if (normalized === 'pending') return '待处理'
+                    if (normalized === 'processing') return '处理中'
+                    if (normalized === 'done') return '已完成'
+                    if (normalized === 'forced') return '已强停'
+                    if (normalized === 'failed') return '失败'
+                    if (normalized === 'ignored') return '已忽略'
+                    return '空闲'
+                }
+
+                const formatDurationSeconds = (value) => {
+                    const seconds = Number(value || 0)
+                    if (!Number.isFinite(seconds) || seconds <= 0) return '--'
+                    if (seconds < 60) return `${Math.ceil(seconds)}s`
+                    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.ceil(seconds % 60)}s`
+                    return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`
+                }
+
                 const solverNodeCardClass = (node) => {
+                    const lifecycleState = String(node?.lifecycle_state || '').toLowerCase()
                     if (!node?.online) return 'border-gray-200'
+                    if (node?.lease_expired) return 'border-rose-200'
+                    if (lifecycleState === 'draining') return 'border-amber-200'
+                    if (lifecycleState === 'standby') return 'border-sky-200'
+                    if (lifecycleState === 'reinitializing') return 'border-violet-200'
                     if (node?.breaker_active) return 'border-rose-200'
                     if (node?.soft_penalty_active) return 'border-fuchsia-200'
                     if (String(node?.health_status || '').toLowerCase() === 'degraded') return 'border-orange-200'
@@ -3076,8 +3413,12 @@
 
                 const isNodeDirectReady = (node) => {
                     const scheduler = solverStatus.value.scheduler || {}
+                    const lifecycleState = String(node?.lifecycle_state || '').toLowerCase()
                     return !!node?.online &&
                         !node?.breaker_active &&
+                        !!node?.accepting_new_tasks &&
+                        !node?.lease_expired &&
+                        !['draining', 'standby', 'reinitializing', 'offline'].includes(lifecycleState) &&
                         Number(node?.available_browsers || 0) > 0 &&
                         Number(node?.effective_capacity || 0) > 0 &&
                         Number(node?.health_score || 0) >= Number(scheduler.direct_min_health_score || 0)
@@ -3285,18 +3626,19 @@
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ count: formCount.value, concurrency: formConcurrency.value })
                         })
+                        const data = await res.json().catch(() => ({}))
                         if (res.ok) {
                             engineRunning.value = true
+                            await Promise.all([fetchStats(), fetchSolverStatus()])
                             fetchLogs(220)
                             setTimeout(() => {
                                 currentTab.value = 'Logs';
                             }, 250);
                         } else {
-                            const err = await res.json()
-                            alert('点火受阻: ' + (err.detail || '核心握手不畅'))
+                            alert('点火受阻: ' + (data.detail || data.message || '核心握手不畅'))
                         }
                     } catch (e) {
-                        alert('网络层指令断裂: ' + e.message)
+                        alert('网络层指令断裂: ' + (e?.message || 'unknown_error'))
                     } finally {
                         isLoading.value = false
                     }
@@ -3305,10 +3647,16 @@
                 const stopEngine = async () => {
                     isLoading.value = true
                     try {
-                        await fetch('/api/control/stop', { method: 'POST' })
-                        engineRunning.value = false
+                        const res = await fetch('/api/control/stop', { method: 'POST' })
+                        const data = await res.json().catch(() => ({}))
+                        if (!res.ok) {
+                            throw new Error(data.detail || data.message || 'stop_request_failed')
+                        }
+                        engineRunning.value = String(data.status || '').toLowerCase() === 'running'
+                        await Promise.all([fetchStats(), fetchSolverStatus()])
+                        fetchLogs(220)
                     } catch (e) {
-                        alert('拦截令传达失败: ' + e.message)
+                        alert('拦截令传达失败: ' + (e?.message || 'unknown_error'))
                     } finally {
                         isLoading.value = false
                         currentTab.value = 'Overview'; // 切回安全概览
@@ -3372,6 +3720,30 @@
                                 solver_diagnostics: {
                                     ...defaultSolverStatus.solver_diagnostics,
                                     ...((payload || {}).solver_diagnostics || {})
+                                },
+                                drain: {
+                                    ...defaultSolverStatus.drain,
+                                    ...((payload || {}).drain || {})
+                                },
+                                resume: {
+                                    ...defaultSolverStatus.resume,
+                                    ...((payload || {}).resume || {})
+                                },
+                                lease: {
+                                    ...defaultSolverStatus.lease,
+                                    ...((payload || {}).lease || {})
+                                },
+                                lifecycle: {
+                                    ...defaultSolverStatus.lifecycle,
+                                    ...((payload || {}).lifecycle || {})
+                                },
+                                control: {
+                                    ...defaultSolverStatus.control,
+                                    ...((payload || {}).control || {}),
+                                    result: {
+                                        ...defaultSolverStatus.control.result,
+                                        ...((((payload || {}).control || {}).result) || {})
+                                    }
                                 },
                                 nodes: Array.isArray((payload || {}).nodes) ? payload.nodes : []
                             }
@@ -3800,7 +4172,7 @@
 
                 return {
                     currentTab,
-                    stats, accounts, logs, displayLogs, solverBrowserSegments, solverQueuePercent, formatTimestampAge, isFetching, isLoading,
+                    stats, accounts, logs, displayLogs, solverBrowserSegments, solverQueuePercent, formatTimestampAge, formatDurationSeconds, isFetching, isLoading,
                     engineRunning, formCount, formConcurrency,
                     autoTail, logFilterMode, elapsed, formatTime, formatFileSize,
                     logColor, fetchStats, fetchAccounts, startEngine, stopEngine, resetStats,
@@ -3809,7 +4181,7 @@
                     proxyPool, proxyRefreshing, fetchProxyPool, proxyRefresh, proxySwitch,
                     apiPoolUrl, directSocksUrl, activeProxyUrl, savingApi, saveProxyApi, proxyMode,
                     enableProxyPool, toggleProxyPool,
-                    solverStatus, fetchSolverStatus, solverHealthBadgeClass, solverHealthText, solverNodeCardClass, isNodeDirectReady, isNodePrefetchReady,
+                    solverStatus, fetchSolverStatus, solverHealthBadgeClass, solverHealthText, solverLifecycleBadgeClass, solverControlBadgeClass, solverControlText, solverNodeCardClass, isNodeDirectReady, isNodePrefetchReady,
                     singbox, sbSubscribeUrl, sbListenPort, sbEnabled,
                     sbRefreshing, sbStarting, sbStopping, sbSaving, sbDownloading,
                     sbMessage, sbMessageOk, sbNodeActioningKey,

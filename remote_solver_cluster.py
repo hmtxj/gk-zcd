@@ -24,6 +24,10 @@ DEFAULT_REINIT_TRIGGER_STREAK = 2
 DEFAULT_REINIT_COOLDOWN_SECONDS = 120.0
 DEFAULT_REINIT_REQUEST_TIMEOUT = 20.0
 DEFAULT_REINIT_MAX_TARGETS = 2
+DEFAULT_LIFECYCLE_REQUEST_TIMEOUT = 15.0
+DEFAULT_DRAIN_GRACE_SECONDS = 20.0
+DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 25.0
+DEFAULT_LEASE_TTL_SECONDS = 90.0
 
 
 @dataclass
@@ -64,12 +68,33 @@ class RemoteSolverNodeState:
     reinit_in_progress: bool = False
     reinit_supported: bool = False
     reinit_cooldown_until: float = 0.0
+    lifecycle_state: str = "offline"
+    drain_requested_at: float = 0.0
+    drain_started_at: float = 0.0
+    drain_finished_at: float = 0.0
+    standby_entered_at: float = 0.0
+    last_task_received_at: float = 0.0
+    last_task_finished_at: float = 0.0
+    idle_since: float = 0.0
+    idle_seconds: float = 0.0
+    accepting_new_tasks: bool = False
+    standby_reason: str = ""
+    last_lease_at: float = 0.0
+    lease_expires_at: float = 0.0
+    lease_owner: str = ""
+    pending_drain_reason: str = ""
+    idle_soft_recycle_count: int = 0
+    idle_standby_count: int = 0
+    manual_drain_count: int = 0
+    lease_expired_standby_count: int = 0
+    standby_auto_resume: bool = True
     online: bool = False
     available_browsers: int = 0
     raw_available_browsers: int = 0
     reserved_slots: int = 0
     total_browsers: int = 0
     tracked_tasks: int = 0
+    active_task_count: int = 0
     in_flight_total: int = 0
     in_flight_prefetch: int = 0
     in_flight_direct: int = 0
@@ -140,6 +165,21 @@ class RemoteSolverNodeState:
     def reinit_cooldown_remaining(self) -> float:
         return max(self.reinit_cooldown_until - time.time(), 0.0)
 
+    @property
+    def effective_lifecycle_state(self) -> str:
+        if not self.online:
+            return "offline"
+        if self.reinit_in_progress:
+            return "reinitializing"
+        state = str(self.lifecycle_state or "").strip().lower()
+        if state in {"active", "draining", "standby", "reinitializing"}:
+            return state
+        return "active" if self.accepting_new_tasks else "standby"
+
+    @property
+    def lease_expired(self) -> bool:
+        return bool(self.lease_expires_at and time.time() >= self.lease_expires_at)
+
     def snapshot(self) -> dict[str, Any]:
         return {
             "url": self.url,
@@ -168,12 +208,34 @@ class RemoteSolverNodeState:
             "reinit_supported": self.reinit_supported,
             "reinit_cooldown_until": round(self.reinit_cooldown_until, 3) if self.reinit_cooldown_until else 0.0,
             "reinit_cooldown_remaining": round(self.reinit_cooldown_remaining, 3),
+            "lifecycle_state": self.effective_lifecycle_state,
+            "drain_requested_at": round(self.drain_requested_at, 3) if self.drain_requested_at else 0.0,
+            "drain_started_at": round(self.drain_started_at, 3) if self.drain_started_at else 0.0,
+            "drain_finished_at": round(self.drain_finished_at, 3) if self.drain_finished_at else 0.0,
+            "standby_entered_at": round(self.standby_entered_at, 3) if self.standby_entered_at else 0.0,
+            "last_task_received_at": round(self.last_task_received_at, 3) if self.last_task_received_at else 0.0,
+            "last_task_finished_at": round(self.last_task_finished_at, 3) if self.last_task_finished_at else 0.0,
+            "idle_since": round(self.idle_since, 3) if self.idle_since else 0.0,
+            "idle_seconds": round(self.idle_seconds, 3),
+            "accepting_new_tasks": self.accepting_new_tasks,
+            "standby_reason": self.standby_reason,
+            "last_lease_at": round(self.last_lease_at, 3) if self.last_lease_at else 0.0,
+            "lease_expires_at": round(self.lease_expires_at, 3) if self.lease_expires_at else 0.0,
+            "lease_owner": self.lease_owner,
+            "pending_drain_reason": self.pending_drain_reason,
+            "idle_soft_recycle_count": self.idle_soft_recycle_count,
+            "idle_standby_count": self.idle_standby_count,
+            "manual_drain_count": self.manual_drain_count,
+            "lease_expired_standby_count": self.lease_expired_standby_count,
+            "standby_auto_resume": self.standby_auto_resume,
+            "lease_expired": self.lease_expired,
             "online": self.online,
             "available_browsers": self.available_browsers,
             "raw_available_browsers": self.raw_available_browsers,
             "reserved_slots": self.reserved_slots,
             "total_browsers": self.total_browsers,
             "tracked_tasks": self.tracked_tasks,
+            "active_task_count": self.active_task_count,
             "in_flight_total": self.in_flight_total,
             "in_flight_prefetch": self.in_flight_prefetch,
             "in_flight_direct": self.in_flight_direct,
@@ -231,6 +293,11 @@ class RemoteSolverCluster:
         reinit_max_targets: int = DEFAULT_REINIT_MAX_TARGETS,
         reinit_allow_broadcast: bool = False,
         reinit_requested_by: str = "remote_solver_cluster",
+        lifecycle_request_timeout: float = DEFAULT_LIFECYCLE_REQUEST_TIMEOUT,
+        drain_grace_seconds: float = DEFAULT_DRAIN_GRACE_SECONDS,
+        heartbeat_interval_seconds: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+        lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS,
+        lease_owner: str = "register-main",
     ):
         self.http_client = http_client
         self.node_provider = node_provider
@@ -254,11 +321,18 @@ class RemoteSolverCluster:
         self.reinit_max_targets = max(int(reinit_max_targets), 1)
         self.reinit_allow_broadcast = bool(reinit_allow_broadcast)
         self.reinit_requested_by = str(reinit_requested_by or "remote_solver_cluster").strip() or "remote_solver_cluster"
+        self.lifecycle_request_timeout = max(float(lifecycle_request_timeout), 3.0)
+        self.drain_grace_seconds = max(float(drain_grace_seconds), 0.0)
+        self.heartbeat_interval_seconds = max(float(heartbeat_interval_seconds), 5.0)
+        self.lease_ttl_seconds = max(float(lease_ttl_seconds), 5.0)
+        self.lease_owner = str(lease_owner or "register-main").strip() or "register-main"
 
         self._state_lock = asyncio.Lock()
         self._cluster_reinit_lock = asyncio.Lock()
         self._prefetch_stop = asyncio.Event()
         self._prefetch_task: asyncio.Task | None = None
+        self._heartbeat_stop = asyncio.Event()
+        self._heartbeat_task: asyncio.Task | None = None
         self._prefetch_sitekey = ""
         self._max_queue_target = max(self.queue_capacity, 0)
         self._reserve_for_direct = 1
@@ -296,6 +370,9 @@ class RemoteSolverCluster:
             if self.reinit_blocked_by_config else ""
         )
         self.last_reinit_effective_mode = ""
+        self.last_drain_summary: dict[str, Any] = {}
+        self.last_resume_summary: dict[str, Any] = {}
+        self.last_lease_summary: dict[str, Any] = {}
 
         self._reload_nodes()
 
@@ -307,6 +384,148 @@ class RemoteSolverCluster:
 
     def _node_display_name(self, state: RemoteSolverNodeState) -> str:
         return state.node_label or state.node_id or state.url
+
+    def _admin_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.admin_token}"} if self.admin_token else {}
+
+    def _apply_runtime_snapshot(
+        self,
+        state: RemoteSolverNodeState,
+        data: dict[str, Any],
+        *,
+        mark_online: bool,
+        http_status: int,
+        now: float | None = None,
+    ):
+        current = time.time() if now is None else now
+        if mark_online:
+            state.online = True
+        state.node_id = str(data.get("node_id") or state.node_id or "")
+        state.node_label = str(data.get("node_label") or state.node_label or state.node_id or "")
+        state.boot_id = str(data.get("boot_id") or state.boot_id or "")
+        state.started_at = max(float(data.get("started_at", state.started_at) or 0.0), 0.0)
+        state.init_count = max(int(data.get("init_count", state.init_count) or 0), 0)
+        state.last_init_at = max(float(data.get("last_init_at", state.last_init_at) or 0.0), 0.0)
+        state.last_init_reason = str(data.get("last_init_reason") or state.last_init_reason or "")
+        state.last_init_result = str(data.get("last_init_result") or state.last_init_result or "")
+        state.last_reinit_requested_by = str(data.get("last_reinit_requested_by") or state.last_reinit_requested_by or "")
+        state.last_reinit_source = str(data.get("last_reinit_source") or state.last_reinit_source or "")
+        state.last_reinit_request_at = max(float(data.get("last_reinit_request_at", state.last_reinit_request_at) or 0.0), 0.0)
+        state.last_reinit_finished_at = max(float(data.get("last_reinit_finished_at", state.last_reinit_finished_at) or 0.0), 0.0)
+        state.last_reinit_error = str(data.get("last_reinit_error") or state.last_reinit_error or "")
+        state.last_reinit_status = str(data.get("last_reinit_status") or state.last_reinit_status or "")
+        state.last_reinit_message = str(data.get("last_reinit_message") or state.last_reinit_message or "")
+        state.last_reinit_mode = str(data.get("last_reinit_mode") or state.last_reinit_mode or "")
+        state.last_reinit_trigger_summary = str(
+            data.get("last_reinit_trigger_summary") or data.get("trigger_summary") or state.last_reinit_trigger_summary or ""
+        )
+        state.last_force_reinit_at = max(float(data.get("last_force_reinit_at", state.last_force_reinit_at) or 0.0), 0.0)
+        state.force_reinit_count = max(int(data.get("force_reinit_count", state.force_reinit_count) or 0), 0)
+        state.last_rebuild_browser_count = max(int(data.get("last_rebuild_browser_count", state.last_rebuild_browser_count) or 0), 0)
+        drained_indexes = data.get("last_reinit_drained_indexes", state.last_reinit_drained_indexes)
+        if isinstance(drained_indexes, list):
+            state.last_reinit_drained_indexes = []
+            for item in drained_indexes:
+                try:
+                    state.last_reinit_drained_indexes.append(int(item))
+                except Exception:
+                    continue
+        state.reinit_in_progress = bool(data.get("reinit_in_progress", state.reinit_in_progress))
+        state.reinit_supported = bool(data.get("reinit_supported", state.reinit_supported))
+        state.reinit_cooldown_until = max(float(data.get("reinit_cooldown_until", state.reinit_cooldown_until) or 0.0), 0.0)
+
+        lifecycle_state = str(data.get("lifecycle_state") or state.lifecycle_state or "").strip().lower()
+        if state.reinit_in_progress:
+            lifecycle_state = "reinitializing"
+        elif lifecycle_state not in {"active", "draining", "standby", "reinitializing", "offline"}:
+            lifecycle_state = state.lifecycle_state or ("active" if state.online else "offline")
+        state.lifecycle_state = lifecycle_state
+        state.drain_requested_at = max(float(data.get("drain_requested_at", state.drain_requested_at) or 0.0), 0.0)
+        state.drain_started_at = max(float(data.get("drain_started_at", state.drain_started_at) or 0.0), 0.0)
+        state.drain_finished_at = max(float(data.get("drain_finished_at", state.drain_finished_at) or 0.0), 0.0)
+        state.standby_entered_at = max(float(data.get("standby_entered_at", state.standby_entered_at) or 0.0), 0.0)
+        state.last_task_received_at = max(float(data.get("last_task_received_at", state.last_task_received_at) or 0.0), 0.0)
+        state.last_task_finished_at = max(float(data.get("last_task_finished_at", state.last_task_finished_at) or 0.0), 0.0)
+        state.idle_since = max(float(data.get("idle_since", state.idle_since) or 0.0), 0.0)
+        state.idle_seconds = round(max(float(data.get("idle_seconds", state.idle_seconds) or 0.0), 0.0), 3)
+        if "accepting_new_tasks" in data:
+            state.accepting_new_tasks = bool(data.get("accepting_new_tasks"))
+        elif state.lifecycle_state in {"draining", "standby", "offline"}:
+            state.accepting_new_tasks = False
+        elif mark_online and state.lifecycle_state == "active":
+            state.accepting_new_tasks = True
+        state.standby_reason = str(data.get("standby_reason") or state.standby_reason or "")
+        state.last_lease_at = max(float(data.get("last_lease_at", state.last_lease_at) or 0.0), 0.0)
+        state.lease_expires_at = max(float(data.get("lease_expires_at", state.lease_expires_at) or 0.0), 0.0)
+        state.lease_owner = str(data.get("lease_owner") or state.lease_owner or "")
+        state.pending_drain_reason = str(data.get("pending_drain_reason") or state.pending_drain_reason or "")
+        state.idle_soft_recycle_count = max(int(data.get("idle_soft_recycle_count", state.idle_soft_recycle_count) or 0), 0)
+        state.idle_standby_count = max(int(data.get("idle_standby_count", state.idle_standby_count) or 0), 0)
+        state.manual_drain_count = max(int(data.get("manual_drain_count", state.manual_drain_count) or 0), 0)
+        state.lease_expired_standby_count = max(
+            int(data.get("lease_expired_standby_count", state.lease_expired_standby_count) or 0),
+            0,
+        )
+        if "standby_auto_resume" in data:
+            state.standby_auto_resume = bool(data.get("standby_auto_resume"))
+
+        state.available_browsers = max(int(data.get("available_browsers", state.available_browsers) or 0), 0)
+        state.raw_available_browsers = max(int(data.get("raw_available_browsers", state.raw_available_browsers or state.available_browsers) or 0), 0)
+        state.reserved_slots = max(int(data.get("reserved_slots", state.reserved_slots) or 0), 0)
+        state.total_browsers = max(int(data.get("total_browsers", state.total_browsers) or 0), 0)
+        state.tracked_tasks = max(int(data.get("tracked_tasks", state.tracked_tasks) or 0), 0)
+        try:
+            active_task_count = data.get("active_task_count", data.get("tracked_tasks", state.active_task_count))
+            state.active_task_count = max(int(active_task_count or 0), 0)
+        except Exception:
+            pass
+
+        health_score_raw = data.get("node_health_score")
+        if health_score_raw is not None:
+            health_score = int(health_score_raw or 0)
+            if health_score <= 0:
+                health_score = max(100 - (state.consecutive_failures * 12) - (state.recent_timeout_count * 6), 20)
+            state.health_score = max(min(health_score, 100), 0)
+            reported_status = str(data.get("node_health_status") or "").strip().lower()
+            state.health_status = reported_status or self._derive_health_status(state.health_score, state.available_browsers)
+            state.degraded_reason = str(data.get("node_degraded_reason") or state.degraded_reason or "")
+            state.recent_timeout_count = max(int(data.get("recent_timeout_count", state.recent_timeout_count) or 0), 0)
+            state.recent_captcha_fail_count = max(int(data.get("recent_captcha_fail_count", state.recent_captcha_fail_count) or 0), 0)
+            state.avg_solve_time_recent = round(max(float(data.get("avg_solve_seconds_recent", state.avg_solve_time_recent) or 0.0), 0.0), 3)
+            if state.health_status in {"warming", "recovering", "cooling"}:
+                state.recovering_until = max(state.recovering_until, current + self.recovering_observe_seconds)
+            elif state.health_status == "degraded":
+                state.soft_penalty_until = max(state.soft_penalty_until, current + self.soft_penalty_seconds)
+                state.last_degraded_at = current
+        elif mark_online and state.health_status in {"unknown", "offline"}:
+            state.health_status = self._derive_health_status(state.health_score, state.available_browsers)
+
+        state.last_stage = str(data.get("stage") or data.get("last_stage") or state.last_stage or "")
+        if "message" in data or "last_message" in data or "node_degraded_reason" in data:
+            state.last_message = str(data.get("message") or data.get("last_message") or data.get("node_degraded_reason") or "")
+        reported_status = str(data.get("status") or data.get("last_status") or "").strip().lower()
+        if reported_status:
+            state.last_status = reported_status
+        elif not state.last_status:
+            state.last_status = state.effective_lifecycle_state
+        state.last_http_status = http_status
+        state.last_seen_at = current
+
+    def _response_json_dict(self, resp: httpx.Response) -> dict[str, Any]:
+        try:
+            data = resp.json()
+        except Exception:
+            data = {}
+        return data if isinstance(data, dict) else {}
+
+    def _result_type(self, ok: bool, message: str, *, skip_messages: set[str] | None = None) -> str:
+        if ok:
+            if skip_messages and message in skip_messages:
+                return "skip"
+            return "success"
+        if skip_messages and message in skip_messages:
+            return "skip"
+        return "failed"
 
     async def _mark_token_success(self):
         async with self._state_lock:
@@ -415,7 +634,6 @@ class RemoteSolverCluster:
         started_at = time.time()
         requested_mode = "soft"
         allow_force = strategy == "targeted" and current_streak >= self.reinit_trigger_streak
-        headers = {"Authorization": f"Bearer {self.admin_token}"} if self.admin_token else {}
         payload = {
             "reason": trigger_reason,
             "requested_by": self.reinit_requested_by,
@@ -429,15 +647,10 @@ class RemoteSolverCluster:
             resp = await self.http_client.post(
                 f"{node_url}/admin/reinitialize",
                 json=payload,
-                headers=headers,
+                headers=self._admin_headers(),
                 timeout=self.reinit_request_timeout,
             )
-            try:
-                data = resp.json()
-            except Exception:
-                data = {}
-            if not isinstance(data, dict):
-                data = {}
+            data = self._response_json_dict(resp)
 
             ok = bool(data.get("ok"))
             message = str(data.get("message") or data.get("detail") or "")
@@ -448,57 +661,34 @@ class RemoteSolverCluster:
                 "force_reinit_not_allowed",
                 "reinitialize_delayed",
             }
-            result_type = "success" if ok else ("skip" if message in skip_messages else "failed")
+            result_type = self._result_type(ok, message, skip_messages=skip_messages)
 
             async with self._state_lock:
                 state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
-                state.online = True
-                state.node_id = str(data.get("node_id") or state.node_id or "")
-                state.node_label = str(data.get("node_label") or state.node_label or state.node_id or "")
-                state.boot_id = str(data.get("boot_id") or state.boot_id or "")
-                state.started_at = max(float(data.get("started_at", state.started_at) or 0.0), 0.0)
-                state.init_count = max(int(data.get("init_count", state.init_count) or 0), 0)
-                state.last_init_at = max(float(data.get("last_init_at", state.last_init_at) or 0.0), 0.0)
-                state.last_init_reason = str(data.get("last_init_reason") or state.last_init_reason or "")
-                state.last_init_result = str(data.get("last_init_result") or state.last_init_result or "")
-                state.last_reinit_requested_by = str(data.get("last_reinit_requested_by") or state.last_reinit_requested_by or "")
-                state.last_reinit_source = str(data.get("last_reinit_source") or state.last_reinit_source or "")
-                state.last_reinit_request_at = max(float(data.get("last_reinit_request_at", state.last_reinit_request_at) or 0.0), 0.0)
-                state.last_reinit_finished_at = max(float(data.get("last_reinit_finished_at", state.last_reinit_finished_at) or 0.0), 0.0)
-                state.last_reinit_error = str(data.get("last_reinit_error") or ("" if result_type != "failed" else message))
+                self._apply_runtime_snapshot(state, data, mark_online=True, http_status=resp.status_code)
+                state.last_reinit_requested_by = str(data.get("last_reinit_requested_by") or self.reinit_requested_by or state.last_reinit_requested_by or "")
+                state.last_reinit_source = str(data.get("last_reinit_source") or "remote_solver_cluster")
+                state.last_reinit_request_at = max(float(data.get("last_reinit_request_at", started_at) or started_at), 0.0)
                 state.last_reinit_status = str(data.get("last_reinit_status") or result_type)
                 state.last_reinit_message = str(data.get("last_reinit_message") or message or state.last_reinit_message or "")
-                state.last_reinit_mode = str(data.get("last_reinit_mode") or state.last_reinit_mode or "")
                 state.last_reinit_trigger_summary = str(
-                    data.get("last_reinit_trigger_summary") or data.get("trigger_summary") or state.last_reinit_trigger_summary or ""
+                    data.get("last_reinit_trigger_summary") or payload["trigger_summary"] or state.last_reinit_trigger_summary or ""
                 )
-                state.last_force_reinit_at = max(float(data.get("last_force_reinit_at", state.last_force_reinit_at) or 0.0), 0.0)
-                state.force_reinit_count = max(int(data.get("force_reinit_count", state.force_reinit_count) or 0), 0)
-                state.last_rebuild_browser_count = max(
-                    int(data.get("last_rebuild_browser_count", state.last_rebuild_browser_count) or 0),
-                    0,
-                )
-                drained_indexes = data.get("last_reinit_drained_indexes", state.last_reinit_drained_indexes)
-                if isinstance(drained_indexes, list):
-                    state.last_reinit_drained_indexes = []
-                    for item in drained_indexes:
-                        try:
-                            state.last_reinit_drained_indexes.append(int(item))
-                        except Exception:
-                            continue
-                state.reinit_in_progress = bool(data.get("reinit_in_progress", state.reinit_in_progress))
-                state.reinit_supported = bool(data.get("reinit_supported", state.reinit_supported or True))
-                state.reinit_cooldown_until = max(float(data.get("reinit_cooldown_until", state.reinit_cooldown_until) or 0.0), 0.0)
-                state.last_http_status = resp.status_code
-                state.last_seen_at = time.time()
                 if result_type == "failed":
-                    state.last_error = message or state.last_error
+                    state.last_reinit_error = str(data.get("last_reinit_error") or message or state.last_reinit_error or "")
+                    state.last_error = state.last_reinit_error
+                elif "last_reinit_error" in data:
+                    state.last_reinit_error = str(data.get("last_reinit_error") or "")
+                    state.last_error = ""
+                else:
+                    state.last_reinit_error = ""
+                    state.last_error = ""
 
                 node_id = state.node_id
                 node_label = state.node_label
                 last_status = state.last_reinit_status
                 last_message = state.last_reinit_message
-                last_mode = str(data.get("effective_mode") or state.last_reinit_mode or "")
+                last_mode = str(data.get("effective_mode") or state.last_reinit_mode or requested_mode)
                 last_rebuild_browser_count = state.last_rebuild_browser_count
 
             self._log(
@@ -710,19 +900,27 @@ class RemoteSolverCluster:
         return "degraded"
 
     def _candidate_unavailable_reason(self, state: RemoteSolverNodeState, request_kind: str) -> str | None:
-        if not state.online:
+        lifecycle_state = state.effective_lifecycle_state
+        if lifecycle_state == "offline" or not state.online:
             return "offline"
-        if state.reinit_in_progress:
+        if lifecycle_state == "reinitializing" or state.reinit_in_progress:
             return "reinitializing"
+        if lifecycle_state == "draining":
+            return "draining"
+        if lifecycle_state == "standby" and not state.standby_auto_resume:
+            return "standby"
+        if not state.accepting_new_tasks and lifecycle_state != "standby":
+            return "accepting_disabled"
         if state.breaker_active:
             return "breaker"
-        if state.available_browsers <= 0:
-            return "no_available_browsers"
-        if state.effective_capacity <= 0:
-            return "capacity_exhausted"
+        if lifecycle_state != "standby":
+            if state.available_browsers <= 0:
+                return "no_available_browsers"
+            if state.effective_capacity <= 0:
+                return "capacity_exhausted"
         if request_kind == "prefetch" and state.in_flight_prefetch >= self._per_node_prefetch:
             return "prefetch_slot_full"
-        if request_kind == "prefetch" and state.health_status in {"degraded", "recovering", "cooling"}:
+        if request_kind == "prefetch" and lifecycle_state != "standby" and state.health_status in {"degraded", "recovering", "cooling"}:
             return "prefetch_suppressed_by_health"
         if request_kind == "prefetch" and state.soft_penalty_active:
             return "soft_penalty"
@@ -733,10 +931,17 @@ class RemoteSolverCluster:
         return None
 
     def _candidate_score(self, state: RemoteSolverNodeState, request_kind: str) -> float:
+        lifecycle_state = state.effective_lifecycle_state
         score = float(state.health_score)
         score += min(state.effective_capacity * 8, 24)
         score += min(state.available_browsers * 4, 12)
         score += state.success_rate * 10
+        if lifecycle_state == "standby":
+            score -= 12 if state.standby_auto_resume else 28
+        elif not state.accepting_new_tasks:
+            score -= 24
+        if state.lease_expired:
+            score -= 8
         if state.soft_penalty_active:
             score -= 18
         if state.recovering_active:
@@ -807,79 +1012,25 @@ class RemoteSolverCluster:
         now = time.time()
         try:
             resp = await self.http_client.get(f"{node_url}/stats", timeout=3)
-            data = resp.json()
+            data = self._response_json_dict(resp)
             if resp.status_code >= 400:
                 raise RuntimeError(f"HTTP {resp.status_code}: {data}")
             async with self._state_lock:
                 state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
-                state.node_id = str(data.get("node_id") or state.node_id or "")
-                state.node_label = str(data.get("node_label") or state.node_label or state.node_id or "")
-                state.boot_id = str(data.get("boot_id") or state.boot_id or "")
-                state.started_at = max(float(data.get("started_at", state.started_at) or 0.0), 0.0)
-                state.init_count = max(int(data.get("init_count", state.init_count) or 0), 0)
-                state.last_init_at = max(float(data.get("last_init_at", state.last_init_at) or 0.0), 0.0)
-                state.last_init_reason = str(data.get("last_init_reason") or state.last_init_reason or "")
-                state.last_init_result = str(data.get("last_init_result") or state.last_init_result or "")
-                state.last_reinit_requested_by = str(data.get("last_reinit_requested_by") or state.last_reinit_requested_by or "")
-                state.last_reinit_source = str(data.get("last_reinit_source") or state.last_reinit_source or "")
-                state.last_reinit_request_at = max(float(data.get("last_reinit_request_at", state.last_reinit_request_at) or 0.0), 0.0)
-                state.last_reinit_finished_at = max(float(data.get("last_reinit_finished_at", state.last_reinit_finished_at) or 0.0), 0.0)
-                state.last_reinit_error = str(data.get("last_reinit_error") or state.last_reinit_error or "")
-                state.last_reinit_status = str(data.get("last_reinit_status") or state.last_reinit_status or "")
-                state.last_reinit_message = str(data.get("last_reinit_message") or state.last_reinit_message or "")
-                state.last_reinit_mode = str(data.get("last_reinit_mode") or state.last_reinit_mode or "")
-                state.last_reinit_trigger_summary = str(
-                    data.get("last_reinit_trigger_summary") or data.get("trigger_summary") or state.last_reinit_trigger_summary or ""
-                )
-                state.last_force_reinit_at = max(float(data.get("last_force_reinit_at", state.last_force_reinit_at) or 0.0), 0.0)
-                state.force_reinit_count = max(int(data.get("force_reinit_count", state.force_reinit_count) or 0), 0)
-                state.last_rebuild_browser_count = max(
-                    int(data.get("last_rebuild_browser_count", state.last_rebuild_browser_count) or 0),
-                    0,
-                )
-                drained_indexes = data.get("last_reinit_drained_indexes", state.last_reinit_drained_indexes)
-                if isinstance(drained_indexes, list):
-                    state.last_reinit_drained_indexes = []
-                    for item in drained_indexes:
-                        try:
-                            state.last_reinit_drained_indexes.append(int(item))
-                        except Exception:
-                            continue
-                state.reinit_in_progress = bool(data.get("reinit_in_progress", state.reinit_in_progress))
-                state.reinit_supported = bool(data.get("reinit_supported", state.reinit_supported))
-                state.reinit_cooldown_until = max(float(data.get("reinit_cooldown_until", state.reinit_cooldown_until) or 0.0), 0.0)
-                state.online = True
-                state.available_browsers = max(int(data.get("available_browsers", 0) or 0), 0)
-                state.raw_available_browsers = max(int(data.get("raw_available_browsers", state.available_browsers) or 0), 0)
-                state.reserved_slots = max(int(data.get("reserved_slots", 0) or 0), 0)
-                state.total_browsers = max(int(data.get("total_browsers", 0) or 0), 0)
-                state.tracked_tasks = max(int(data.get("tracked_tasks", 0) or 0), 0)
-                health_score = int(data.get("node_health_score", state.health_score) or 0)
-                if health_score <= 0:
-                    health_score = max(100 - (state.consecutive_failures * 12) - (state.recent_timeout_count * 6), 20)
-                state.health_score = max(min(health_score, 100), 0)
-                reported_status = str(data.get("node_health_status") or "").strip().lower()
-                state.health_status = reported_status or self._derive_health_status(state.health_score, state.available_browsers)
-                state.degraded_reason = str(data.get("node_degraded_reason") or state.degraded_reason or "")
-                state.recent_timeout_count = max(int(data.get("recent_timeout_count", state.recent_timeout_count) or 0), 0)
-                state.recent_captcha_fail_count = max(int(data.get("recent_captcha_fail_count", state.recent_captcha_fail_count) or 0), 0)
-                state.avg_solve_time_recent = round(max(float(data.get("avg_solve_seconds_recent", state.avg_solve_time_recent) or 0.0), 0.0), 3)
-                if state.health_status in {"warming", "recovering", "cooling"}:
-                    state.recovering_until = max(state.recovering_until, now + self.recovering_observe_seconds)
-                elif state.health_status == "degraded":
-                    state.soft_penalty_until = max(state.soft_penalty_until, now + self.soft_penalty_seconds)
-                    state.last_degraded_at = now
-                state.last_stage = str(data.get("last_stage") or state.last_stage or "")
-                state.last_message = str(data.get("message") or data.get("node_degraded_reason") or state.last_message or "")
-                state.last_status = state.health_status or "healthy"
-                state.last_http_status = resp.status_code
-                state.last_seen_at = now
+                self._apply_runtime_snapshot(state, data, mark_online=True, http_status=resp.status_code, now=now)
                 state.last_error = ""
         except Exception as e:
             async with self._state_lock:
                 state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
                 state.online = False
+                state.lifecycle_state = "offline"
+                state.accepting_new_tasks = False
                 state.available_browsers = 0
+                state.raw_available_browsers = 0
+                state.reserved_slots = 0
+                state.total_browsers = 0
+                state.tracked_tasks = 0
+                state.active_task_count = 0
                 state.health_score = 0
                 state.health_status = "offline"
                 state.degraded_reason = "stats_unreachable"
@@ -887,6 +1038,743 @@ class RemoteSolverCluster:
                 state.last_error = str(e)
                 state.last_status = "offline"
                 state.last_seen_at = now
+
+    async def _request_node_drain(
+        self,
+        node_url: str,
+        *,
+        reason: str,
+        requested_by: str = "remote_solver_cluster",
+        source: str = "remote_solver_cluster",
+        enter_standby: bool = True,
+        graceful: bool = True,
+        force_reinitialize_when_idle: bool = False,
+    ) -> dict[str, Any]:
+        started_at = time.time()
+        if not self.admin_token:
+            async with self._state_lock:
+                state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
+                node_id = state.node_id
+                node_label = state.node_label
+                lifecycle_state = state.effective_lifecycle_state
+            return {
+                "node_url": node_url,
+                "node_id": node_id,
+                "node_label": node_label,
+                "ok": False,
+                "accepted": False,
+                "http_status": 0,
+                "result_type": "failed",
+                "message": "missing_admin_token",
+                "lifecycle_state": lifecycle_state,
+                "requested_at": round(started_at, 3),
+                "finished_at": round(time.time(), 3),
+            }
+
+        payload = {
+            "reason": reason,
+            "requested_by": requested_by,
+            "source": source,
+            "enter_standby": bool(enter_standby),
+            "graceful": bool(graceful),
+            "force_reinitialize_when_idle": bool(force_reinitialize_when_idle),
+        }
+        try:
+            resp = await self.http_client.post(
+                f"{node_url}/admin/drain",
+                json=payload,
+                headers=self._admin_headers(),
+                timeout=self.lifecycle_request_timeout,
+            )
+            data = self._response_json_dict(resp)
+            ok = bool(data.get("ok"))
+            message = str(data.get("message") or data.get("detail") or "")
+            result_type = self._result_type(ok, message, skip_messages={"already_standby", "standby_delayed"})
+
+            async with self._state_lock:
+                state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
+                self._apply_runtime_snapshot(state, data, mark_online=True, http_status=resp.status_code)
+                state.last_stage = str(data.get("stage") or state.last_stage or state.effective_lifecycle_state)
+                state.last_status = str(data.get("status") or state.last_status or state.effective_lifecycle_state)
+                state.last_message = str(message or state.last_message or "")
+                state.last_error = "" if result_type != "failed" else (message or state.last_error)
+                node_id = state.node_id
+                node_label = state.node_label
+                lifecycle_state = state.effective_lifecycle_state
+
+            self._log(
+                f"[调度] {'✅' if result_type == 'success' else ('⚠️' if result_type == 'skip' else '❌')} "
+                f"节点 [{node_label or node_id or node_url}] 排空结果: {message or lifecycle_state or result_type}"
+                f"（HTTP {resp.status_code}，state={lifecycle_state}）"
+            )
+            return {
+                "node_url": node_url,
+                "node_id": node_id,
+                "node_label": node_label,
+                "ok": ok,
+                "accepted": bool(data.get("accepted")),
+                "http_status": resp.status_code,
+                "result_type": result_type,
+                "message": message,
+                "lifecycle_state": lifecycle_state,
+                "requested_at": round(started_at, 3),
+                "finished_at": round(time.time(), 3),
+            }
+        except Exception as e:
+            async with self._state_lock:
+                state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
+                state.online = False
+                state.lifecycle_state = "offline"
+                state.accepting_new_tasks = False
+                state.last_error = str(e)
+                state.last_http_status = 0
+                state.last_seen_at = time.time()
+                node_id = state.node_id
+                node_label = state.node_label
+
+            self._log(f"[调度] ❌ 节点 [{node_label or node_id or node_url}] 排空请求异常: {e}")
+            return {
+                "node_url": node_url,
+                "node_id": node_id,
+                "node_label": node_label,
+                "ok": False,
+                "accepted": False,
+                "http_status": 0,
+                "result_type": "failed",
+                "message": str(e),
+                "lifecycle_state": "offline",
+                "requested_at": round(started_at, 3),
+                "finished_at": round(time.time(), 3),
+            }
+
+    async def _request_node_resume(
+        self,
+        node_url: str,
+        *,
+        reason: str,
+        requested_by: str = "remote_solver_cluster",
+        source: str = "remote_solver_cluster",
+    ) -> dict[str, Any]:
+        started_at = time.time()
+        if not self.admin_token:
+            async with self._state_lock:
+                state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
+                node_id = state.node_id
+                node_label = state.node_label
+                lifecycle_state = state.effective_lifecycle_state
+            return {
+                "node_url": node_url,
+                "node_id": node_id,
+                "node_label": node_label,
+                "ok": False,
+                "accepted": False,
+                "http_status": 0,
+                "result_type": "failed",
+                "message": "missing_admin_token",
+                "lifecycle_state": lifecycle_state,
+                "requested_at": round(started_at, 3),
+                "finished_at": round(time.time(), 3),
+            }
+
+        payload = {
+            "reason": reason,
+            "requested_by": requested_by,
+            "source": source,
+        }
+        try:
+            resp = await self.http_client.post(
+                f"{node_url}/admin/resume",
+                json=payload,
+                headers=self._admin_headers(),
+                timeout=self.lifecycle_request_timeout,
+            )
+            data = self._response_json_dict(resp)
+            ok = bool(data.get("ok"))
+            message = str(data.get("message") or data.get("detail") or "")
+            result_type = self._result_type(ok, message, skip_messages={"already_active"})
+
+            async with self._state_lock:
+                state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
+                self._apply_runtime_snapshot(state, data, mark_online=True, http_status=resp.status_code)
+                state.last_stage = str(data.get("stage") or state.last_stage or state.effective_lifecycle_state)
+                state.last_status = str(data.get("status") or state.last_status or state.effective_lifecycle_state)
+                state.last_message = str(message or state.last_message or "")
+                state.last_error = "" if result_type != "failed" else (message or state.last_error)
+                node_id = state.node_id
+                node_label = state.node_label
+                lifecycle_state = state.effective_lifecycle_state
+                initialized_browsers = max(int(data.get("initialized_browsers", 0) or 0), 0)
+
+            self._log(
+                f"[调度] {'✅' if result_type == 'success' else ('⚠️' if result_type == 'skip' else '❌')} "
+                f"节点 [{node_label or node_id or node_url}] 恢复结果: {message or lifecycle_state or result_type}"
+                f"（HTTP {resp.status_code}，state={lifecycle_state}，initialized={initialized_browsers}）"
+            )
+            return {
+                "node_url": node_url,
+                "node_id": node_id,
+                "node_label": node_label,
+                "ok": ok,
+                "accepted": bool(data.get("accepted")),
+                "http_status": resp.status_code,
+                "result_type": result_type,
+                "message": message,
+                "lifecycle_state": lifecycle_state,
+                "initialized_browsers": initialized_browsers,
+                "requested_at": round(started_at, 3),
+                "finished_at": round(time.time(), 3),
+            }
+        except Exception as e:
+            async with self._state_lock:
+                state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
+                state.online = False
+                state.lifecycle_state = "offline"
+                state.accepting_new_tasks = False
+                state.last_error = str(e)
+                state.last_http_status = 0
+                state.last_seen_at = time.time()
+                node_id = state.node_id
+                node_label = state.node_label
+
+            self._log(f"[调度] ❌ 节点 [{node_label or node_id or node_url}] 恢复请求异常: {e}")
+            return {
+                "node_url": node_url,
+                "node_id": node_id,
+                "node_label": node_label,
+                "ok": False,
+                "accepted": False,
+                "http_status": 0,
+                "result_type": "failed",
+                "message": str(e),
+                "lifecycle_state": "offline",
+                "initialized_browsers": 0,
+                "requested_at": round(started_at, 3),
+                "finished_at": round(time.time(), 3),
+            }
+
+    async def _renew_node_lease(self, node_url: str, *, reason: str = "register_heartbeat") -> dict[str, Any]:
+        started_at = time.time()
+        if not self.admin_token:
+            async with self._state_lock:
+                state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
+                node_id = state.node_id
+                node_label = state.node_label
+                lifecycle_state = state.effective_lifecycle_state
+            return {
+                "node_url": node_url,
+                "node_id": node_id,
+                "node_label": node_label,
+                "ok": False,
+                "accepted": False,
+                "http_status": 0,
+                "result_type": "failed",
+                "message": "missing_admin_token",
+                "lifecycle_state": lifecycle_state,
+                "lease_owner": self.lease_owner,
+                "lease_ttl_seconds": round(self.lease_ttl_seconds, 3),
+                "requested_at": round(started_at, 3),
+                "finished_at": round(time.time(), 3),
+            }
+
+        payload = {
+            "lease_owner": self.lease_owner,
+            "lease_ttl_seconds": self.lease_ttl_seconds,
+            "reason": reason,
+        }
+        try:
+            resp = await self.http_client.post(
+                f"{node_url}/admin/lease",
+                json=payload,
+                headers=self._admin_headers(),
+                timeout=self.lifecycle_request_timeout,
+            )
+            data = self._response_json_dict(resp)
+            ok = bool(data.get("ok"))
+            message = str(data.get("message") or data.get("detail") or "")
+            result_type = self._result_type(ok, message)
+
+            async with self._state_lock:
+                state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
+                self._apply_runtime_snapshot(state, data, mark_online=True, http_status=resp.status_code)
+                state.last_stage = str(data.get("stage") or state.last_stage or state.effective_lifecycle_state)
+                state.last_status = str(data.get("status") or state.last_status or state.effective_lifecycle_state)
+                state.last_message = str(message or state.last_message or "")
+                state.last_error = "" if result_type != "failed" else (message or state.last_error)
+                node_id = state.node_id
+                node_label = state.node_label
+                lifecycle_state = state.effective_lifecycle_state
+                lease_ttl_seconds = round(max(float(data.get("lease_ttl_seconds", self.lease_ttl_seconds) or self.lease_ttl_seconds), 0.0), 3)
+
+            if result_type == "failed":
+                self._log(f"[调度] ❌ 节点 [{node_label or node_id or node_url}] 租约续期失败: {message or 'unknown_error'}")
+            return {
+                "node_url": node_url,
+                "node_id": node_id,
+                "node_label": node_label,
+                "ok": ok,
+                "accepted": bool(data.get("accepted")),
+                "http_status": resp.status_code,
+                "result_type": result_type,
+                "message": message,
+                "lifecycle_state": lifecycle_state,
+                "lease_owner": str(data.get("lease_owner") or state.lease_owner or self.lease_owner),
+                "lease_ttl_seconds": lease_ttl_seconds,
+                "requested_at": round(started_at, 3),
+                "finished_at": round(time.time(), 3),
+            }
+        except Exception as e:
+            async with self._state_lock:
+                state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
+                state.online = False
+                state.lifecycle_state = "offline"
+                state.accepting_new_tasks = False
+                state.last_error = str(e)
+                state.last_http_status = 0
+                state.last_seen_at = time.time()
+                node_id = state.node_id
+                node_label = state.node_label
+
+            self._log(f"[调度] ❌ 节点 [{node_label or node_id or node_url}] 租约续期异常: {e}")
+            return {
+                "node_url": node_url,
+                "node_id": node_id,
+                "node_label": node_label,
+                "ok": False,
+                "accepted": False,
+                "http_status": 0,
+                "result_type": "failed",
+                "message": str(e),
+                "lifecycle_state": "offline",
+                "lease_owner": self.lease_owner,
+                "lease_ttl_seconds": round(self.lease_ttl_seconds, 3),
+                "requested_at": round(started_at, 3),
+                "finished_at": round(time.time(), 3),
+            }
+
+    async def drain_all_nodes(
+        self,
+        *,
+        reason: str = "batch_finish",
+        requested_by: str = "remote_solver_cluster",
+        source: str = "remote_solver_cluster",
+        enter_standby: bool = True,
+        graceful: bool = True,
+        force_reinitialize_when_idle: bool = False,
+        target_nodes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        self._reload_nodes()
+        started_at = time.time()
+        target_urls = self._normalize_nodes(target_nodes or list(self._nodes.keys()))
+        initial_summary = {
+            "ok": False,
+            "action": "drain_all_nodes",
+            "message": "drain_dispatching",
+            "reason": reason,
+            "requested_by": requested_by,
+            "source": source,
+            "enter_standby": bool(enter_standby),
+            "graceful": bool(graceful),
+            "force_reinitialize_when_idle": bool(force_reinitialize_when_idle),
+            "requested_at": round(started_at, 3),
+            "finished_at": 0.0,
+            "targets": list(target_urls),
+            "results": [],
+            "success_count": 0,
+            "skip_count": 0,
+            "fail_count": 0,
+            "accepted_count": 0,
+            "in_progress": True,
+        }
+        async with self._state_lock:
+            self.last_drain_summary = dict(initial_summary)
+
+        if not target_urls:
+            summary = dict(initial_summary)
+            summary.update({
+                "ok": True,
+                "message": "no_nodes_configured",
+                "finished_at": round(time.time(), 3),
+                "in_progress": False,
+            })
+            async with self._state_lock:
+                self.last_drain_summary = summary
+            return summary
+
+        results = await asyncio.gather(
+            *[
+                self._request_node_drain(
+                    node_url,
+                    reason=reason,
+                    requested_by=requested_by,
+                    source=source,
+                    enter_standby=enter_standby,
+                    graceful=graceful,
+                    force_reinitialize_when_idle=force_reinitialize_when_idle,
+                )
+                for node_url in target_urls
+            ],
+            return_exceptions=True,
+        )
+
+        normalized_results: list[dict[str, Any]] = []
+        success_count = 0
+        skip_count = 0
+        fail_count = 0
+        accepted_count = 0
+        for item in results:
+            if isinstance(item, Exception):
+                fail_count += 1
+                normalized_results.append(
+                    {
+                        "node_url": "",
+                        "node_id": "",
+                        "node_label": "",
+                        "ok": False,
+                        "accepted": False,
+                        "http_status": 0,
+                        "result_type": "failed",
+                        "message": str(item),
+                        "lifecycle_state": "offline",
+                        "requested_at": round(started_at, 3),
+                        "finished_at": round(time.time(), 3),
+                    }
+                )
+                continue
+            normalized_results.append(item)
+            if bool(item.get("accepted")):
+                accepted_count += 1
+            result_type = str(item.get("result_type") or "failed")
+            if result_type == "success":
+                success_count += 1
+            elif result_type == "skip":
+                skip_count += 1
+            else:
+                fail_count += 1
+
+        summary = {
+            "ok": fail_count == 0,
+            "action": "drain_all_nodes",
+            "message": "drain_broadcast_completed" if fail_count == 0 else "drain_broadcast_partial_failure",
+            "reason": reason,
+            "requested_by": requested_by,
+            "source": source,
+            "enter_standby": bool(enter_standby),
+            "graceful": bool(graceful),
+            "force_reinitialize_when_idle": bool(force_reinitialize_when_idle),
+            "requested_at": round(started_at, 3),
+            "finished_at": round(time.time(), 3),
+            "targets": list(target_urls),
+            "results": normalized_results,
+            "success_count": success_count,
+            "skip_count": skip_count,
+            "fail_count": fail_count,
+            "accepted_count": accepted_count,
+            "in_progress": False,
+        }
+        async with self._state_lock:
+            self.last_drain_summary = summary
+
+        self._log(
+            f"[调度] 🧯 远程排空广播完成: success={success_count}, skip={skip_count}, fail={fail_count}, targets={len(target_urls)}"
+        )
+        return summary
+
+    async def resume_all_nodes(
+        self,
+        *,
+        reason: str = "batch_start_resume",
+        requested_by: str = "remote_solver_cluster",
+        source: str = "remote_solver_cluster",
+        target_nodes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        self._reload_nodes()
+        started_at = time.time()
+        target_urls = self._normalize_nodes(target_nodes or list(self._nodes.keys()))
+        initial_summary = {
+            "ok": False,
+            "action": "resume_all_nodes",
+            "message": "resume_dispatching",
+            "reason": reason,
+            "requested_by": requested_by,
+            "source": source,
+            "requested_at": round(started_at, 3),
+            "finished_at": 0.0,
+            "targets": list(target_urls),
+            "results": [],
+            "success_count": 0,
+            "skip_count": 0,
+            "fail_count": 0,
+            "accepted_count": 0,
+        }
+        async with self._state_lock:
+            self.last_resume_summary = dict(initial_summary)
+
+        if not target_urls:
+            summary = dict(initial_summary)
+            summary.update({
+                "ok": True,
+                "message": "no_nodes_configured",
+                "finished_at": round(time.time(), 3),
+            })
+            async with self._state_lock:
+                self.last_resume_summary = summary
+            return summary
+
+        results = await asyncio.gather(
+            *[
+                self._request_node_resume(
+                    node_url,
+                    reason=reason,
+                    requested_by=requested_by,
+                    source=source,
+                )
+                for node_url in target_urls
+            ],
+            return_exceptions=True,
+        )
+
+        normalized_results: list[dict[str, Any]] = []
+        success_count = 0
+        skip_count = 0
+        fail_count = 0
+        accepted_count = 0
+        for item in results:
+            if isinstance(item, Exception):
+                fail_count += 1
+                normalized_results.append(
+                    {
+                        "node_url": "",
+                        "node_id": "",
+                        "node_label": "",
+                        "ok": False,
+                        "accepted": False,
+                        "http_status": 0,
+                        "result_type": "failed",
+                        "message": str(item),
+                        "lifecycle_state": "offline",
+                        "initialized_browsers": 0,
+                        "requested_at": round(started_at, 3),
+                        "finished_at": round(time.time(), 3),
+                    }
+                )
+                continue
+            normalized_results.append(item)
+            if bool(item.get("accepted")):
+                accepted_count += 1
+            result_type = str(item.get("result_type") or "failed")
+            if result_type == "success":
+                success_count += 1
+            elif result_type == "skip":
+                skip_count += 1
+            else:
+                fail_count += 1
+
+        summary = {
+            "ok": fail_count == 0,
+            "action": "resume_all_nodes",
+            "message": "resume_broadcast_completed" if fail_count == 0 else "resume_broadcast_partial_failure",
+            "reason": reason,
+            "requested_by": requested_by,
+            "source": source,
+            "requested_at": round(started_at, 3),
+            "finished_at": round(time.time(), 3),
+            "targets": list(target_urls),
+            "results": normalized_results,
+            "success_count": success_count,
+            "skip_count": skip_count,
+            "fail_count": fail_count,
+            "accepted_count": accepted_count,
+        }
+        async with self._state_lock:
+            self.last_resume_summary = summary
+
+        self._log(
+            f"[调度] 🔄 远程恢复广播完成: success={success_count}, skip={skip_count}, fail={fail_count}, targets={len(target_urls)}"
+        )
+        return summary
+
+    async def _heartbeat_worker(self):
+        while not self._heartbeat_stop.is_set():
+            started_at = time.time()
+            try:
+                self._reload_nodes()
+                async with self._state_lock:
+                    target_urls = [state.url for state in self._nodes.values() if state.online]
+
+                if not target_urls:
+                    summary = {
+                        "ok": True,
+                        "action": "renew_all_leases",
+                        "message": "no_online_nodes",
+                        "reason": "register_heartbeat",
+                        "requested_at": round(started_at, 3),
+                        "finished_at": round(time.time(), 3),
+                        "targets": [],
+                        "results": [],
+                        "success_count": 0,
+                        "skip_count": 0,
+                        "fail_count": 0,
+                        "accepted_count": 0,
+                        "heartbeat_running": True,
+                        "interval_seconds": round(self.heartbeat_interval_seconds, 3),
+                        "lease_owner": self.lease_owner,
+                        "lease_ttl_seconds": round(self.lease_ttl_seconds, 3),
+                    }
+                else:
+                    results = await asyncio.gather(
+                        *[self._renew_node_lease(node_url, reason="register_heartbeat") for node_url in target_urls],
+                        return_exceptions=True,
+                    )
+                    normalized_results: list[dict[str, Any]] = []
+                    success_count = 0
+                    skip_count = 0
+                    fail_count = 0
+                    accepted_count = 0
+                    for item in results:
+                        if isinstance(item, Exception):
+                            fail_count += 1
+                            normalized_results.append(
+                                {
+                                    "node_url": "",
+                                    "node_id": "",
+                                    "node_label": "",
+                                    "ok": False,
+                                    "accepted": False,
+                                    "http_status": 0,
+                                    "result_type": "failed",
+                                    "message": str(item),
+                                    "lifecycle_state": "offline",
+                                    "lease_owner": self.lease_owner,
+                                    "lease_ttl_seconds": round(self.lease_ttl_seconds, 3),
+                                    "requested_at": round(started_at, 3),
+                                    "finished_at": round(time.time(), 3),
+                                }
+                            )
+                            continue
+                        normalized_results.append(item)
+                        if bool(item.get("accepted")):
+                            accepted_count += 1
+                        result_type = str(item.get("result_type") or "failed")
+                        if result_type == "success":
+                            success_count += 1
+                        elif result_type == "skip":
+                            skip_count += 1
+                        else:
+                            fail_count += 1
+
+                    summary = {
+                        "ok": fail_count == 0,
+                        "action": "renew_all_leases",
+                        "message": "heartbeat_cycle_completed" if fail_count == 0 else "heartbeat_cycle_partial_failure",
+                        "reason": "register_heartbeat",
+                        "requested_at": round(started_at, 3),
+                        "finished_at": round(time.time(), 3),
+                        "targets": list(target_urls),
+                        "results": normalized_results,
+                        "success_count": success_count,
+                        "skip_count": skip_count,
+                        "fail_count": fail_count,
+                        "accepted_count": accepted_count,
+                        "heartbeat_running": True,
+                        "interval_seconds": round(self.heartbeat_interval_seconds, 3),
+                        "lease_owner": self.lease_owner,
+                        "lease_ttl_seconds": round(self.lease_ttl_seconds, 3),
+                    }
+                    if fail_count > 0:
+                        self._log(
+                            f"[调度] ⚠️ 租约心跳完成: success={success_count}, skip={skip_count}, fail={fail_count}, targets={len(target_urls)}"
+                        )
+
+                async with self._state_lock:
+                    self.last_lease_summary = summary
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                summary = {
+                    "ok": False,
+                    "action": "renew_all_leases",
+                    "message": str(e),
+                    "reason": "register_heartbeat",
+                    "requested_at": round(started_at, 3),
+                    "finished_at": round(time.time(), 3),
+                    "targets": [],
+                    "results": [],
+                    "success_count": 0,
+                    "skip_count": 0,
+                    "fail_count": 1,
+                    "accepted_count": 0,
+                    "heartbeat_running": True,
+                    "interval_seconds": round(self.heartbeat_interval_seconds, 3),
+                    "lease_owner": self.lease_owner,
+                    "lease_ttl_seconds": round(self.lease_ttl_seconds, 3),
+                }
+                async with self._state_lock:
+                    self.last_lease_summary = summary
+                self._log(f"[调度] ❌ 租约心跳异常: {e}")
+
+            try:
+                await asyncio.wait_for(self._heartbeat_stop.wait(), timeout=self.heartbeat_interval_seconds)
+            except asyncio.TimeoutError:
+                continue
+
+    async def heartbeat_loop(self):
+        if not self.admin_token:
+            async with self._state_lock:
+                self.last_lease_summary = {
+                    "ok": False,
+                    "action": "renew_all_leases",
+                    "message": "missing_admin_token",
+                    "reason": "register_heartbeat",
+                    "requested_at": round(time.time(), 3),
+                    "finished_at": round(time.time(), 3),
+                    "targets": [],
+                    "results": [],
+                    "success_count": 0,
+                    "skip_count": 0,
+                    "fail_count": 0,
+                    "accepted_count": 0,
+                    "heartbeat_running": False,
+                    "interval_seconds": round(self.heartbeat_interval_seconds, 3),
+                    "lease_owner": self.lease_owner,
+                    "lease_ttl_seconds": round(self.lease_ttl_seconds, 3),
+                }
+            self._log("[调度] ⚠️ 未配置 SOLVER_ADMIN_TOKEN，跳过租约心跳")
+            return
+
+        self._heartbeat_stop.clear()
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            return
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_worker())
+
+    async def stop_heartbeat(self):
+        self._heartbeat_stop.set()
+        if self._heartbeat_task:
+            try:
+                await asyncio.wait_for(self._heartbeat_task, timeout=max(self.heartbeat_interval_seconds, 10.0))
+            except Exception:
+                self._heartbeat_task.cancel()
+            self._heartbeat_task = None
+
+        stopped_at = round(time.time(), 3)
+        async with self._state_lock:
+            summary = dict(self.last_lease_summary or {})
+            summary.setdefault("action", "renew_all_leases")
+            summary.setdefault("requested_at", 0.0)
+            summary.setdefault("finished_at", 0.0)
+            summary.setdefault("targets", [])
+            summary.setdefault("results", [])
+            summary.setdefault("success_count", 0)
+            summary.setdefault("skip_count", 0)
+            summary.setdefault("fail_count", 0)
+            summary.setdefault("accepted_count", 0)
+            summary.setdefault("lease_owner", self.lease_owner)
+            summary.setdefault("lease_ttl_seconds", round(self.lease_ttl_seconds, 3))
+            summary["message"] = str(summary.get("message") or "heartbeat_stopped")
+            summary["heartbeat_running"] = False
+            summary["interval_seconds"] = round(self.heartbeat_interval_seconds, 3)
+            summary["stopped_at"] = stopped_at
+            self.last_lease_summary = summary
+            return dict(summary)
 
     async def start_prefetch(
         self,
@@ -1275,10 +2163,46 @@ class RemoteSolverCluster:
                 params={"url": SIGNUP_URL, "sitekey": sitekey},
                 timeout=5,
             )
-            data = resp.json()
+            data = self._response_json_dict(resp)
+
+            async with self._state_lock:
+                state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
+                self._apply_runtime_snapshot(state, data, mark_online=True, http_status=resp.status_code)
+
             if resp.status_code >= 400:
+                status = str(data.get("status") or "").strip().lower()
+                stage = str(data.get("stage") or "").strip().lower()
+                error_code = str(data.get("error") or "").strip().lower()
                 message = str(data.get("message") or data.get("error") or data)
-                await self._mark_node_rejected(node_url, status="busy", stage="rejected", message=message, http_status=resp.status_code)
+                lifecycle_rejection = (
+                    error_code in {"solver_reinitializing", "solver_draining", "solver_standby", "solver_standby_resume_failed"}
+                    or stage in {"reinitializing", "draining", "standby", "standby_waking"}
+                    or status in {"draining", "standby"}
+                )
+                if lifecycle_rejection:
+                    async with self._state_lock:
+                        state = self._nodes.setdefault(node_url, RemoteSolverNodeState(url=node_url))
+                        state.last_status = status or state.last_status or "busy"
+                        state.last_stage = stage or state.last_stage or "rejected"
+                        state.last_message = message or state.last_message
+                        state.last_error = ""
+                        state.last_http_status = resp.status_code
+                        state.last_seen_at = time.time()
+                        state.rejected_count += 1
+                        lifecycle_state = state.effective_lifecycle_state
+                    self._log(
+                        f"[调度] ⚠️ 节点 [{node_url}] 生命周期拒绝 {label} 请求: "
+                        f"HTTP {resp.status_code} {message or error_code or lifecycle_state}"
+                    )
+                    return None
+
+                await self._mark_node_rejected(
+                    node_url,
+                    status=status or "busy",
+                    stage=stage or "rejected",
+                    message=message,
+                    http_status=resp.status_code,
+                )
                 self._log(f"[调度] ⚠️ 节点 [{node_url}] 拒绝 {label} 请求: HTTP {resp.status_code} {message}")
                 return None
 
@@ -1374,9 +2298,23 @@ class RemoteSolverCluster:
             )
             soft_penalty_nodes = sum(1 for state in states if state.soft_penalty_active)
             breaker_nodes = sum(1 for state in states if state.breaker_active)
+            active_nodes = sum(1 for state in states if state.effective_lifecycle_state == "active")
+            draining_nodes = sum(1 for state in states if state.effective_lifecycle_state == "draining")
+            standby_nodes = sum(1 for state in states if state.effective_lifecycle_state == "standby")
+            reinitializing_nodes = sum(1 for state in states if state.effective_lifecycle_state == "reinitializing")
+            offline_nodes = sum(1 for state in states if state.effective_lifecycle_state == "offline")
+            accepting_disabled_nodes = sum(1 for state in states if state.online and not state.accepting_new_tasks)
+            lease_expired_nodes = sum(1 for state in states if state.online and state.lease_expired)
             busy_nodes = sum(
-                1 for state in states
-                if state.online and (state.available_browsers <= 0 or state.effective_capacity <= 0 or state.reinit_in_progress)
+                1
+                for state in states
+                if state.online and (
+                    state.effective_lifecycle_state in {"draining", "reinitializing"}
+                    or (
+                        state.effective_lifecycle_state != "standby"
+                        and (state.available_browsers <= 0 or state.effective_capacity <= 0)
+                    )
+                )
             )
             direct_ready_nodes = sum(1 for state in states if self._candidate_unavailable_reason(state, "direct") is None)
             prefetch_ready_nodes = sum(1 for state in states if self._candidate_unavailable_reason(state, "prefetch") is None)
@@ -1390,6 +2328,7 @@ class RemoteSolverCluster:
                 if str(item.get("result_type") or "failed") not in {"success", "skip"}
                 and str(item.get("node_url") or item.get("node_label") or item.get("node_id") or "")
             ]
+            heartbeat_running = bool(self._heartbeat_task and not self._heartbeat_task.done())
             cluster_reinit = {
                 "enabled": self.reinit_enabled,
                 "admin_configured": bool(self.admin_token),
@@ -1419,6 +2358,60 @@ class RemoteSolverCluster:
                 "fail_count": self.reinit_fail_count,
                 "skip_count": self.reinit_skip_count,
             }
+            drain_summary = dict(self.last_drain_summary or {})
+            drain_summary.setdefault("ok", True)
+            drain_summary.setdefault("action", "drain_all_nodes")
+            drain_summary.setdefault("message", "")
+            drain_summary.setdefault("reason", "")
+            drain_summary.setdefault("requested_by", "")
+            drain_summary.setdefault("source", "")
+            drain_summary.setdefault("requested_at", 0.0)
+            drain_summary.setdefault("finished_at", 0.0)
+            drain_summary.setdefault("targets", [])
+            drain_summary.setdefault("results", [])
+            drain_summary.setdefault("success_count", 0)
+            drain_summary.setdefault("skip_count", 0)
+            drain_summary.setdefault("fail_count", 0)
+            drain_summary.setdefault("accepted_count", 0)
+            drain_summary["in_progress"] = bool(drain_summary.get("in_progress")) or draining_nodes > 0
+
+            resume_summary = dict(self.last_resume_summary or {})
+            resume_summary.setdefault("ok", True)
+            resume_summary.setdefault("action", "resume_all_nodes")
+            resume_summary.setdefault("message", "")
+            resume_summary.setdefault("reason", "")
+            resume_summary.setdefault("requested_by", "")
+            resume_summary.setdefault("source", "")
+            resume_summary.setdefault("requested_at", 0.0)
+            resume_summary.setdefault("finished_at", 0.0)
+            resume_summary.setdefault("targets", [])
+            resume_summary.setdefault("results", [])
+            resume_summary.setdefault("success_count", 0)
+            resume_summary.setdefault("skip_count", 0)
+            resume_summary.setdefault("fail_count", 0)
+            resume_summary.setdefault("accepted_count", 0)
+
+            lease_summary = dict(self.last_lease_summary or {})
+            lease_summary.setdefault("ok", True)
+            lease_summary.setdefault("action", "renew_all_leases")
+            lease_summary.setdefault("message", "")
+            lease_summary.setdefault("reason", "")
+            lease_summary.setdefault("requested_at", 0.0)
+            lease_summary.setdefault("finished_at", 0.0)
+            lease_summary.setdefault("targets", [])
+            lease_summary.setdefault("results", [])
+            lease_summary.setdefault("success_count", 0)
+            lease_summary.setdefault("skip_count", 0)
+            lease_summary.setdefault("fail_count", 0)
+            lease_summary.setdefault("accepted_count", 0)
+            lease_summary["heartbeat_running"] = heartbeat_running
+            lease_summary["interval_seconds"] = round(self.heartbeat_interval_seconds, 3)
+            lease_summary.setdefault("lease_owner", self.lease_owner)
+            lease_summary.setdefault("lease_ttl_seconds", round(self.lease_ttl_seconds, 3))
+
+            last_drain_at = round(float(drain_summary.get("requested_at") or 0.0), 3) if drain_summary.get("requested_at") else 0.0
+            last_resume_at = round(float(resume_summary.get("requested_at") or 0.0), 3) if resume_summary.get("requested_at") else 0.0
+            last_lease_at = round(float(lease_summary.get("requested_at") or 0.0), 3) if lease_summary.get("requested_at") else 0.0
 
         return {
             "queue_target": self.last_queue_target,
@@ -1437,7 +2430,6 @@ class RemoteSolverCluster:
             "direct_last_unavailable_since": round(self.direct_unavailable_since, 3) if self.direct_unavailable_since else 0.0,
             "direct_last_unavailable_summary": self.last_direct_unavailable_summary,
             "last_direct_unavailable_at": round(self.last_direct_unavailable_at, 3) if self.last_direct_unavailable_at else 0.0,
-            "last_direct_unavailable_summary": self.last_direct_unavailable_summary,
             "last_token_success_at": round(self.last_token_success_at, 3) if self.last_token_success_at else 0.0,
             "reinit_available": cluster_reinit["available"],
             "reinit_blocked_by_config": cluster_reinit["blocked_by_config"],
@@ -1445,7 +2437,33 @@ class RemoteSolverCluster:
             "reinit_last_effective_mode": cluster_reinit["last_effective_mode"],
             "reinit_last_effective_targets": list(cluster_reinit["last_effective_targets"]),
             "reinit_last_failed_targets": list(cluster_reinit["last_failed_targets"]),
+            "drain_in_progress": bool(drain_summary.get("in_progress")),
+            "last_drain_at": last_drain_at,
+            "last_drain_reason": str(drain_summary.get("reason") or ""),
+            "last_drain_targets": list(drain_summary.get("targets") or []),
+            "last_drain_results": list(drain_summary.get("results") or []),
+            "last_resume_at": last_resume_at,
+            "last_resume_reason": str(resume_summary.get("reason") or ""),
+            "last_resume_targets": list(resume_summary.get("targets") or []),
+            "last_resume_results": list(resume_summary.get("results") or []),
+            "last_lease_at": last_lease_at,
+            "last_lease_targets": list(lease_summary.get("targets") or []),
+            "last_lease_results": list(lease_summary.get("results") or []),
+            "heartbeat_running": heartbeat_running,
+            "heartbeat_interval_seconds": round(self.heartbeat_interval_seconds, 3),
             "reinit": cluster_reinit,
+            "drain": drain_summary,
+            "resume": resume_summary,
+            "lease": lease_summary,
+            "lifecycle": {
+                "active_nodes": active_nodes,
+                "draining_nodes": draining_nodes,
+                "standby_nodes": standby_nodes,
+                "reinitializing_nodes": reinitializing_nodes,
+                "offline_nodes": offline_nodes,
+                "accepting_disabled_nodes": accepting_disabled_nodes,
+                "lease_expired_nodes": lease_expired_nodes,
+            },
             "summary": {
                 "online_nodes": online_nodes,
                 "healthy_nodes": healthy_nodes,
@@ -1457,6 +2475,13 @@ class RemoteSolverCluster:
                 "direct_ready_nodes": direct_ready_nodes,
                 "prefetch_ready_nodes": prefetch_ready_nodes,
                 "avg_health_score": avg_health_score,
+                "active_nodes": active_nodes,
+                "draining_nodes": draining_nodes,
+                "standby_nodes": standby_nodes,
+                "reinitializing_nodes": reinitializing_nodes,
+                "offline_nodes": offline_nodes,
+                "accepting_disabled_nodes": accepting_disabled_nodes,
+                "lease_expired_nodes": lease_expired_nodes,
             },
             "nodes": node_snapshots,
         }

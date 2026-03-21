@@ -176,6 +176,11 @@ SOLVER_REINIT_REQUEST_TIMEOUT = _get_env_float("SOLVER_REINIT_REQUEST_TIMEOUT", 
 SOLVER_REINIT_MAX_TARGETS = _get_env_int("SOLVER_REINIT_MAX_TARGETS", 2, minimum=1, maximum=20)
 SOLVER_REINIT_ALLOW_BROADCAST = _get_env_bool("SOLVER_REINIT_ALLOW_BROADCAST", False)
 SOLVER_REINIT_REQUESTED_BY = os.environ.get("SOLVER_REINIT_REQUESTED_BY", "register-cluster").strip() or "register-cluster"
+SOLVER_DRAIN_ON_BATCH_FINISH = _get_env_bool("SOLVER_DRAIN_ON_BATCH_FINISH", True)
+SOLVER_DRAIN_GRACE_SECONDS = _get_env_float("SOLVER_DRAIN_GRACE_SECONDS", 20.0, minimum=0.0)
+SOLVER_HEARTBEAT_INTERVAL_SECONDS = _get_env_float("SOLVER_HEARTBEAT_INTERVAL_SECONDS", 25.0, minimum=5.0)
+SOLVER_LEASE_TTL_SECONDS = _get_env_float("SOLVER_LEASE_TTL_SECONDS", 90.0, minimum=5.0)
+SOLVER_CONTROL_POLL_INTERVAL_SECONDS = _get_env_float("SOLVER_CONTROL_POLL_INTERVAL_SECONDS", 0.75, minimum=0.2, maximum=10.0)
 
 # 持久化文件路径（以脚本所在目录为基准，运行时数据写入 data/ 子目录）
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -220,6 +225,7 @@ _RUNTIME_NETWORK_STATE = {
 }
 _batch_abort: asyncio.Event | None = None
 SOLVER_STATUS_SNAPSHOT_FILE = os.path.join(DATA_DIR, "solver_cluster_status.json")
+SOLVER_CONTROL_FILE = os.path.join(DATA_DIR, "solver_control.json")
 
 
 def _build_solver_summary_base() -> dict[str, object]:
@@ -233,6 +239,13 @@ def _build_solver_summary_base() -> dict[str, object]:
         "busy_nodes": 0,
         "direct_ready_nodes": 0,
         "prefetch_ready_nodes": 0,
+        "active_nodes": 0,
+        "draining_nodes": 0,
+        "standby_nodes": 0,
+        "reinitializing_nodes": 0,
+        "offline_nodes": 0,
+        "accepting_disabled_nodes": 0,
+        "lease_expired_nodes": 0,
         "avg_health_score": 0.0,
     }
 
@@ -264,6 +277,10 @@ def _build_solver_scheduler_config(queue_capacity: int = 0) -> dict[str, object]
         "reinit_max_targets": SOLVER_REINIT_MAX_TARGETS,
         "reinit_allow_broadcast": SOLVER_REINIT_ALLOW_BROADCAST,
         "reinit_requested_by": SOLVER_REINIT_REQUESTED_BY,
+        "drain_on_batch_finish": SOLVER_DRAIN_ON_BATCH_FINISH,
+        "drain_grace_seconds": round(SOLVER_DRAIN_GRACE_SECONDS, 3),
+        "heartbeat_interval_seconds": round(SOLVER_HEARTBEAT_INTERVAL_SECONDS, 3),
+        "lease_ttl_seconds": round(SOLVER_LEASE_TTL_SECONDS, 3),
     }
 
 
@@ -360,6 +377,20 @@ def _build_solver_status_base(reason: str = "", running: bool = False, queue_cap
         "per_node_prefetch": SOLVER_PER_NODE_PREFETCH,
         "max_queue_target": normalized_queue_capacity,
         "prefetch_sitekey": "",
+        "drain_in_progress": False,
+        "last_drain_at": 0.0,
+        "last_drain_reason": "",
+        "last_drain_targets": [],
+        "last_drain_results": [],
+        "last_resume_at": 0.0,
+        "last_resume_reason": "",
+        "last_resume_targets": [],
+        "last_resume_results": [],
+        "last_lease_at": 0.0,
+        "last_lease_targets": [],
+        "last_lease_results": [],
+        "heartbeat_running": False,
+        "heartbeat_interval_seconds": round(SOLVER_HEARTBEAT_INTERVAL_SECONDS, 3),
         "reinit": {
             "enabled": SOLVER_REINIT_ENABLED,
             "admin_configured": bool(SOLVER_ADMIN_TOKEN),
@@ -389,6 +420,62 @@ def _build_solver_status_base(reason: str = "", running: bool = False, queue_cap
             "fail_count": 0,
             "skip_count": 0,
         },
+        "drain": {
+            "ok": False,
+            "action": "drain_all_nodes",
+            "message": "idle",
+            "reason": "",
+            "requested_at": 0.0,
+            "finished_at": 0.0,
+            "targets": [],
+            "results": [],
+            "success_count": 0,
+            "skip_count": 0,
+            "fail_count": 0,
+            "accepted_count": 0,
+            "in_progress": False,
+        },
+        "resume": {
+            "ok": False,
+            "action": "resume_all_nodes",
+            "message": "idle",
+            "reason": "",
+            "requested_at": 0.0,
+            "finished_at": 0.0,
+            "targets": [],
+            "results": [],
+            "success_count": 0,
+            "skip_count": 0,
+            "fail_count": 0,
+            "accepted_count": 0,
+        },
+        "lease": {
+            "ok": False,
+            "action": "renew_all_leases",
+            "message": "heartbeat_idle",
+            "reason": "",
+            "requested_at": 0.0,
+            "finished_at": 0.0,
+            "targets": [],
+            "results": [],
+            "success_count": 0,
+            "skip_count": 0,
+            "fail_count": 0,
+            "accepted_count": 0,
+            "heartbeat_running": False,
+            "interval_seconds": round(SOLVER_HEARTBEAT_INTERVAL_SECONDS, 3),
+            "lease_owner": "",
+            "lease_ttl_seconds": round(SOLVER_LEASE_TTL_SECONDS, 3),
+        },
+        "lifecycle": {
+            "active_nodes": 0,
+            "draining_nodes": 0,
+            "standby_nodes": 0,
+            "reinitializing_nodes": 0,
+            "offline_nodes": 0,
+            "accepting_disabled_nodes": 0,
+            "lease_expired_nodes": 0,
+        },
         "summary": _build_solver_summary_base(),
         "scheduler": _build_solver_scheduler_config(queue_capacity=normalized_queue_capacity),
         "network_diagnostics": _build_runtime_network_diagnostics(),
@@ -411,6 +498,78 @@ def _write_solver_status_snapshot(payload: dict[str, object] | None = None):
         except Exception:
             pass
         print(f"  ⚠️ [监控快照] 写入 Solver 状态失败: {e}")
+
+
+
+def _build_solver_control_base(status: str = "idle", message: str = "") -> dict[str, object]:
+    return {
+        "request_id": "",
+        "action": "",
+        "status": status,
+        "requested_at": 0.0,
+        "requested_by": "",
+        "reason": "",
+        "grace_seconds": round(SOLVER_DRAIN_GRACE_SECONDS, 3),
+        "enter_standby": True,
+        "graceful": True,
+        "shutdown_after_drain": True,
+        "target_pid": os.getpid(),
+        "handled_at": 0.0,
+        "finished_at": 0.0,
+        "message": message,
+        "result": {},
+    }
+
+
+
+def _load_solver_control_state() -> dict[str, object]:
+    if not os.path.exists(SOLVER_CONTROL_FILE):
+        return {}
+    try:
+        with open(SOLVER_CONTROL_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return payload if isinstance(payload, dict) else {}
+    except Exception as e:
+        return {
+            "status": "read_error",
+            "message": f"solver_control_read_error: {e}",
+            "target_pid": os.getpid(),
+        }
+
+
+
+def _write_solver_control_state(payload: dict[str, object] | None = None):
+    control_state = _build_solver_control_base()
+    if isinstance(payload, dict):
+        control_state.update(payload)
+    control_state["target_pid"] = int(control_state.get("target_pid") or os.getpid())
+    tmp_path = f"{SOLVER_CONTROL_FILE}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(control_state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, SOLVER_CONTROL_FILE)
+    except Exception as e:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+        print(f"  ⚠️ [控制通道] 写入 solver_control.json 失败: {e}")
+
+
+
+def _initialize_solver_control_state():
+    current = _load_solver_control_state()
+    try:
+        target_pid = int(current.get("target_pid") or 0)
+    except Exception:
+        target_pid = 0
+    status = str(current.get("status") or "").strip().lower()
+    if target_pid == os.getpid() and status in {"requested", "pending", "processing"}:
+        current["target_pid"] = os.getpid()
+        _write_solver_control_state(current)
+        return
+    _write_solver_control_state(_build_solver_control_base(status="idle"))
 
 
 async def _capture_solver_status_snapshot(sitekey: str = "", running: bool | None = None, reason: str = ""):
@@ -494,6 +653,167 @@ async def _publish_solver_status_snapshot(sitekey: str = ""):
                 _build_solver_status_base(reason=f"snapshot_publish_error: {e}", running=False)
             )
             await asyncio.sleep(2)
+
+
+async def _handle_solver_control_request(request: dict[str, object], sitekey: str = "") -> dict[str, object]:
+    control_state = _build_solver_control_base(status="processing")
+    if isinstance(request, dict):
+        control_state.update(request)
+    control_state["status"] = "processing"
+    control_state["handled_at"] = round(time.time(), 3)
+    control_state["finished_at"] = 0.0
+    control_state["target_pid"] = os.getpid()
+    control_state["message"] = "processing"
+    _write_solver_control_state(control_state)
+
+    action = str(control_state.get("action") or "").strip().lower()
+    if action != "drain_all_nodes":
+        control_state["status"] = "ignored"
+        control_state["message"] = f"unsupported_action:{action or 'empty'}"
+        control_state["finished_at"] = round(time.time(), 3)
+        _write_solver_control_state(control_state)
+        return control_state
+
+    reason = str(control_state.get("reason") or "manual_stop_requested")
+    requested_by = str(control_state.get("requested_by") or "web_server_stop")
+    try:
+        grace_seconds = max(float(control_state.get("grace_seconds", SOLVER_DRAIN_GRACE_SECONDS) or 0.0), 0.0)
+    except Exception:
+        grace_seconds = max(float(SOLVER_DRAIN_GRACE_SECONDS or 0.0), 0.0)
+    enter_standby = bool(control_state.get("enter_standby", True))
+    graceful = bool(control_state.get("graceful", True))
+
+    print(
+        "  🛰️ [控制通道] 收到远程排空指令: "
+        f"requested_by={requested_by}, reason={reason}, grace={round(grace_seconds, 3)}s"
+    )
+
+    if _batch_abort is not None:
+        _RUNTIME_NETWORK_STATE["abort_reason"] = reason
+        _batch_abort.set()
+    if _prefetch_stop is not None:
+        _prefetch_stop.set()
+
+    operation_results: list[dict[str, object]] = []
+    drain_summary: dict[str, object] = {}
+
+    if solver_cluster is None:
+        control_state["status"] = "ignored"
+        control_state["message"] = "solver_cluster_unavailable"
+    else:
+        try:
+            await solver_cluster.stop_prefetch()
+            operation_results.append({"action": "stop_prefetch", "ok": True, "message": "prefetch_stopped"})
+        except Exception as e:
+            operation_results.append({"action": "stop_prefetch", "ok": False, "message": str(e)})
+            _RUNTIME_NETWORK_STATE["last_solver_cluster_error"] = f"solver_control_stop_prefetch_failed: {e}"
+
+        try:
+            await solver_cluster.stop_heartbeat()
+            operation_results.append({"action": "stop_heartbeat", "ok": True, "message": "heartbeat_stopped"})
+        except Exception as e:
+            operation_results.append({"action": "stop_heartbeat", "ok": False, "message": str(e)})
+            _RUNTIME_NETWORK_STATE["last_solver_cluster_error"] = f"solver_control_stop_heartbeat_failed: {e}"
+
+        if getattr(solver_cluster, "admin_token", ""):
+            try:
+                drain_summary = await solver_cluster.drain_all_nodes(
+                    reason=reason,
+                    requested_by=requested_by,
+                    source="solver_control",
+                    enter_standby=enter_standby,
+                    graceful=graceful,
+                )
+                control_state["status"] = "completed"
+                control_state["message"] = str(drain_summary.get("message") or "drain_broadcast_completed")
+            except Exception as e:
+                failure_message = f"drain_all_nodes_failed: {e}"
+                _RUNTIME_NETWORK_STATE["last_solver_cluster_error"] = failure_message
+                control_state["status"] = "failed"
+                control_state["message"] = failure_message
+                drain_summary = {
+                    "ok": False,
+                    "action": "drain_all_nodes",
+                    "message": failure_message,
+                    "reason": reason,
+                    "requested_at": round(time.time(), 3),
+                    "finished_at": round(time.time(), 3),
+                    "targets": [],
+                    "results": [],
+                    "success_count": 0,
+                    "skip_count": 0,
+                    "fail_count": 1,
+                    "accepted_count": 0,
+                    "in_progress": False,
+                }
+        else:
+            drain_summary = {
+                "ok": False,
+                "action": "drain_all_nodes",
+                "message": "missing_admin_token",
+                "reason": reason,
+                "requested_at": round(time.time(), 3),
+                "finished_at": round(time.time(), 3),
+                "targets": [],
+                "results": [],
+                "success_count": 0,
+                "skip_count": 0,
+                "fail_count": 0,
+                "accepted_count": 0,
+                "in_progress": False,
+            }
+            control_state["status"] = "completed"
+            control_state["message"] = "missing_admin_token"
+
+    control_state["result"] = {
+        "operations": operation_results,
+        "drain": drain_summary,
+    }
+
+    try:
+        await _capture_solver_status_snapshot(sitekey=sitekey, running=False, reason=control_state["message"])
+        if grace_seconds > 0 and control_state["status"] == "completed" and drain_summary:
+            print(f"  ⏳ [控制通道] 等待远程排空 grace period: {round(grace_seconds, 3)}s")
+            await asyncio.sleep(grace_seconds)
+            await _capture_solver_status_snapshot(sitekey=sitekey, running=False, reason=control_state["message"])
+    finally:
+        control_state["finished_at"] = round(time.time(), 3)
+        _write_solver_control_state(control_state)
+
+    print(
+        "  ✅ [控制通道] 远程排空指令处理完成: "
+        f"status={control_state['status']}, message={control_state['message']}"
+    )
+    return control_state
+
+
+async def _watch_solver_control(sitekey: str = ""):
+    last_request_id = ""
+    while True:
+        try:
+            control_state = _load_solver_control_state()
+            request_id = str(control_state.get("request_id") or "").strip()
+            action = str(control_state.get("action") or "").strip().lower()
+            status = str(control_state.get("status") or "").strip().lower()
+            try:
+                target_pid = int(control_state.get("target_pid") or 0)
+            except Exception:
+                target_pid = 0
+
+            if target_pid not in {0, os.getpid()}:
+                await asyncio.sleep(SOLVER_CONTROL_POLL_INTERVAL_SECONDS)
+                continue
+
+            if request_id and request_id != last_request_id and action and status in {"requested", "pending"}:
+                last_request_id = request_id
+                await _handle_solver_control_request(control_state, sitekey=sitekey)
+
+            await asyncio.sleep(SOLVER_CONTROL_POLL_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            _RUNTIME_NETWORK_STATE["last_solver_cluster_error"] = f"solver_control_watch_failed: {e}"
+            await asyncio.sleep(max(SOLVER_CONTROL_POLL_INTERVAL_SECONDS, 0.5))
 
 
 async def get_cached_action_id(session: CurlAsyncSession) -> tuple[str, str]:
@@ -1588,7 +1908,9 @@ async def batch_register(count: int = 1, concurrency: int = 5):
     _prefetch_stop = asyncio.Event()
     solver_cluster = None
     solver_status_task: asyncio.Task | None = None
+    solver_control_task: asyncio.Task | None = None
     _write_solver_status_snapshot(_build_solver_status_base(reason="initializing", running=False, queue_capacity=queue_cap))
+    _initialize_solver_control_state()
 
     # httpx 用于 Freemail 和 Turnstile Solver（无需 TLS 伪装）
     async with httpx.AsyncClient(
@@ -1693,9 +2015,54 @@ async def batch_register(count: int = 1, concurrency: int = 5):
                     reinit_max_targets=SOLVER_REINIT_MAX_TARGETS,
                     reinit_allow_broadcast=SOLVER_REINIT_ALLOW_BROADCAST,
                     reinit_requested_by=SOLVER_REINIT_REQUESTED_BY,
+                    drain_grace_seconds=SOLVER_DRAIN_GRACE_SECONDS,
+                    heartbeat_interval_seconds=SOLVER_HEARTBEAT_INTERVAL_SECONDS,
+                    lease_ttl_seconds=SOLVER_LEASE_TTL_SECONDS,
+                    lease_owner=f"register-main:{os.getpid()}",
                 )
                 token_queue = solver_cluster.token_queue
                 _prefetch_stop = solver_cluster._prefetch_stop
+
+                if getattr(solver_cluster, "admin_token", ""):
+                    try:
+                        resume_summary = await solver_cluster.resume_all_nodes(
+                            reason="batch_start_resume",
+                            requested_by="register-batch",
+                            source="batch_register_start",
+                        )
+                        print(
+                            "  🔄 [节点生命周期] 远程恢复完成: "
+                            f"success={int(resume_summary.get('success_count', 0) or 0)}, "
+                            f"skip={int(resume_summary.get('skip_count', 0) or 0)}, "
+                            f"fail={int(resume_summary.get('fail_count', 0) or 0)}"
+                        )
+                        await _capture_solver_status_snapshot(
+                            sitekey=initial_sitekey,
+                            running=False,
+                            reason=str(resume_summary.get("message") or "resume_broadcast_completed"),
+                        )
+                    except Exception as e:
+                        _RUNTIME_NETWORK_STATE["last_solver_cluster_error"] = f"resume_all_nodes_failed: {e}"
+                        print(f"  ⚠️ [节点生命周期] 批量恢复失败: {e}")
+
+                    try:
+                        await solver_cluster.heartbeat_loop()
+                        print(
+                            "  💓 [节点生命周期] 心跳续租已启动: "
+                            f"interval={round(float(getattr(solver_cluster, 'heartbeat_interval_seconds', SOLVER_HEARTBEAT_INTERVAL_SECONDS) or 0), 3)}s, "
+                            f"ttl={round(float(getattr(solver_cluster, 'lease_ttl_seconds', SOLVER_LEASE_TTL_SECONDS) or 0), 3)}s"
+                        )
+                        await _capture_solver_status_snapshot(
+                            sitekey=initial_sitekey,
+                            running=False,
+                            reason="heartbeat_started",
+                        )
+                    except Exception as e:
+                        _RUNTIME_NETWORK_STATE["last_solver_cluster_error"] = f"heartbeat_loop_failed: {e}"
+                        print(f"  ⚠️ [节点生命周期] 心跳续租启动失败: {e}")
+                else:
+                    print("  ⚠️ [节点生命周期] 未配置 SOLVER_ADMIN_TOKEN，跳过 resume / heartbeat / drain 链路")
+
                 await solver_cluster.start_prefetch(
                     initial_sitekey,
                     max_queue_target=queue_cap,
@@ -1704,6 +2071,7 @@ async def batch_register(count: int = 1, concurrency: int = 5):
                 )
                 await _capture_solver_status_snapshot(sitekey=initial_sitekey, running=True, reason="prefetch_started")
                 solver_status_task = asyncio.create_task(_publish_solver_status_snapshot(sitekey=initial_sitekey))
+                solver_control_task = asyncio.create_task(_watch_solver_control(sitekey=initial_sitekey))
 
                 # 创建并发注册任务，每个任务分配独立代理 IP
                 tasks = [
@@ -1719,11 +2087,55 @@ async def batch_register(count: int = 1, concurrency: int = 5):
                 if _prefetch_stop is not None:
                     _prefetch_stop.set()
                 if solver_cluster is not None:
-                    await solver_cluster.stop_prefetch()
+                    try:
+                        await solver_cluster.stop_prefetch()
+                    except Exception as e:
+                        _RUNTIME_NETWORK_STATE["last_solver_cluster_error"] = f"stop_prefetch_failed: {e}"
+                        print(f"  ⚠️ [节点生命周期] 停止预热失败: {e}")
+
+                    try:
+                        await solver_cluster.stop_heartbeat()
+                    except Exception as e:
+                        _RUNTIME_NETWORK_STATE["last_solver_cluster_error"] = f"stop_heartbeat_failed: {e}"
+                        print(f"  ⚠️ [节点生命周期] 停止心跳失败: {e}")
+
+                    if getattr(solver_cluster, "admin_token", "") and SOLVER_DRAIN_ON_BATCH_FINISH:
+                        try:
+                            drain_reason = str(_RUNTIME_NETWORK_STATE.get("abort_reason") or "batch_finish")
+                            drain_summary = await solver_cluster.drain_all_nodes(
+                                reason=drain_reason,
+                                requested_by="register-batch",
+                                source="batch_register_finally",
+                                enter_standby=True,
+                                graceful=True,
+                            )
+                            print(
+                                "  🧯 [节点生命周期] 远程排空完成: "
+                                f"success={int(drain_summary.get('success_count', 0) or 0)}, "
+                                f"skip={int(drain_summary.get('skip_count', 0) or 0)}, "
+                                f"fail={int(drain_summary.get('fail_count', 0) or 0)}"
+                            )
+                            grace_seconds = max(float(getattr(solver_cluster, "drain_grace_seconds", SOLVER_DRAIN_GRACE_SECONDS) or 0.0), 0.0)
+                            if grace_seconds > 0:
+                                print(f"  ⏳ [节点生命周期] 等待远程排空 grace period: {round(grace_seconds, 3)}s")
+                                await asyncio.sleep(grace_seconds)
+                        except Exception as e:
+                            _RUNTIME_NETWORK_STATE["last_solver_cluster_error"] = f"drain_all_nodes_failed: {e}"
+                            print(f"  ⚠️ [节点生命周期] 远程排空失败: {e}")
+                    elif not getattr(solver_cluster, "admin_token", ""):
+                        print("  ℹ️ [节点生命周期] 未配置 SOLVER_ADMIN_TOKEN，跳过远程排空")
+                    elif not SOLVER_DRAIN_ON_BATCH_FINISH:
+                        print("  ℹ️ [节点生命周期] 已关闭批次结束自动排空")
                 if solver_status_task is not None:
                     solver_status_task.cancel()
                     try:
                         await solver_status_task
+                    except asyncio.CancelledError:
+                        pass
+                if solver_control_task is not None:
+                    solver_control_task.cancel()
+                    try:
+                        await solver_control_task
                     except asyncio.CancelledError:
                         pass
                 await _capture_solver_status_snapshot(

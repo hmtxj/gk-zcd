@@ -8,6 +8,7 @@ import csv
 import time
 import math
 import signal
+import asyncio
 import subprocess
 import threading
 import webbrowser
@@ -50,6 +51,9 @@ app = FastAPI(title="Grok Register Control Center")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 SOLVER_STATUS_SNAPSHOT_FILE = os.path.join(DATA_DIR, "solver_cluster_status.json")
+SOLVER_CONTROL_FILE = os.path.join(DATA_DIR, "solver_control.json")
+MANUAL_STOP_WAIT_TIMEOUT_SECONDS = 45.0
+MANUAL_STOP_POLL_INTERVAL_SECONDS = 0.5
 os.makedirs(DATA_DIR, exist_ok=True)
 ensure_result_store()
 
@@ -188,6 +192,60 @@ def _load_solver_cluster_snapshot() -> dict[str, Any]:
         return {"reason": f"snapshot_read_error: {e}"}
 
 
+
+def _build_solver_control_base(status: str = "idle", message: str = "") -> dict[str, Any]:
+    return {
+        "request_id": "",
+        "action": "",
+        "status": status,
+        "requested_at": 0.0,
+        "requested_by": "",
+        "reason": "",
+        "grace_seconds": 0.0,
+        "enter_standby": True,
+        "graceful": True,
+        "shutdown_after_drain": True,
+        "target_pid": 0,
+        "handled_at": 0.0,
+        "finished_at": 0.0,
+        "message": message,
+        "result": {},
+    }
+
+
+
+def _load_solver_control_state() -> dict[str, Any]:
+    if not os.path.exists(SOLVER_CONTROL_FILE):
+        return {}
+    try:
+        with open(SOLVER_CONTROL_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        return {
+            "status": "read_error",
+            "message": f"solver_control_read_error: {e}",
+        }
+
+
+
+def _write_solver_control_state(payload: dict[str, Any] | None = None):
+    state = _build_solver_control_base()
+    if isinstance(payload, dict):
+        state.update(payload)
+    tmp_path = f"{SOLVER_CONTROL_FILE}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, SOLVER_CONTROL_FILE)
+    except Exception:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
+
+
 def _build_solver_node_status(
     node_url: str,
     live_data: dict[str, Any] | None = None,
@@ -196,6 +254,7 @@ def _build_solver_node_status(
 ) -> dict[str, Any]:
     live_data = live_data or {}
     snapshot_node = snapshot_node or {}
+    now = time.time()
 
     available = _safe_int(live_data.get("available_browsers", snapshot_node.get("available_browsers", 0)))
     raw_available = _safe_int(live_data.get("raw_available_browsers", snapshot_node.get("raw_available_browsers", available)))
@@ -298,7 +357,48 @@ def _build_solver_node_status(
     recent_captcha_fail_count = _safe_int(live_data.get("recent_captcha_fail_count", snapshot_node.get("recent_captcha_fail_count", 0)))
     last_degraded_at = _safe_float(snapshot_node.get("last_degraded_at", 0.0))
 
-    busy = online and (available <= 0 or effective_capacity <= 0 or last_status == "busy" or health_status == "cooling" or reinit_in_progress)
+    lifecycle_state = str(
+        live_data.get("lifecycle_state")
+        or snapshot_node.get("lifecycle_state")
+        or ("active" if online else "offline")
+    ).strip().lower()
+    if not lifecycle_state:
+        lifecycle_state = "active" if online else "offline"
+    accepting_new_tasks = bool(
+        live_data.get(
+            "accepting_new_tasks",
+            snapshot_node.get("accepting_new_tasks", lifecycle_state not in {"draining", "standby", "offline"}),
+        )
+    )
+    last_task_received_at = _safe_float(live_data.get("last_task_received_at", snapshot_node.get("last_task_received_at", 0.0)))
+    last_task_finished_at = _safe_float(live_data.get("last_task_finished_at", snapshot_node.get("last_task_finished_at", 0.0)))
+    idle_since = _safe_float(live_data.get("idle_since", snapshot_node.get("idle_since", 0.0)))
+    idle_seconds = round(_safe_float(live_data.get("idle_seconds", snapshot_node.get("idle_seconds", 0.0))), 3)
+    if idle_seconds <= 0 and idle_since > 0:
+        idle_seconds = round(max(now - idle_since, 0.0), 3)
+    drain_requested_at = _safe_float(live_data.get("drain_requested_at", snapshot_node.get("drain_requested_at", 0.0)))
+    drain_finished_at = _safe_float(live_data.get("drain_finished_at", snapshot_node.get("drain_finished_at", 0.0)))
+    standby_entered_at = _safe_float(live_data.get("standby_entered_at", snapshot_node.get("standby_entered_at", 0.0)))
+    standby_reason = str(live_data.get("standby_reason") or snapshot_node.get("standby_reason") or "")
+    lease_expires_at = _safe_float(live_data.get("lease_expires_at", snapshot_node.get("lease_expires_at", 0.0)))
+    lease_owner = str(live_data.get("lease_owner") or snapshot_node.get("lease_owner") or "")
+    standby_auto_resume = bool(live_data.get("standby_auto_resume", snapshot_node.get("standby_auto_resume", False)))
+    lease_expired = bool(
+        live_data.get(
+            "lease_expired",
+            snapshot_node.get("lease_expired", bool(lease_expires_at > 0 and lease_expires_at <= now)),
+        )
+    )
+    lease_remaining_seconds = round(max(lease_expires_at - now, 0.0), 3) if lease_expires_at > 0 else 0.0
+
+    busy = online and (
+        available <= 0
+        or effective_capacity <= 0
+        or last_status == "busy"
+        or health_status == "cooling"
+        or reinit_in_progress
+        or lifecycle_state in {"draining", "reinitializing"}
+    )
     degraded = (
         breaker_active
         or soft_penalty_active
@@ -306,6 +406,7 @@ def _build_solver_node_status(
         or health_status in {"degraded", "recovering", "cooling"}
         or last_status in {"failed", "timeout", "offline"}
         or reinit_in_progress
+        or lease_expired
     )
 
     if live_data and snapshot_node:
@@ -378,6 +479,22 @@ def _build_solver_node_status(
         "reinit_supported": reinit_supported,
         "reinit_cooldown_until": reinit_cooldown_until,
         "reinit_cooldown_remaining": reinit_cooldown_remaining,
+        "lifecycle_state": lifecycle_state,
+        "accepting_new_tasks": accepting_new_tasks,
+        "accepting_disabled": online and not accepting_new_tasks,
+        "last_task_received_at": last_task_received_at,
+        "last_task_finished_at": last_task_finished_at,
+        "idle_since": idle_since,
+        "idle_seconds": idle_seconds,
+        "drain_requested_at": drain_requested_at,
+        "drain_finished_at": drain_finished_at,
+        "standby_entered_at": standby_entered_at,
+        "standby_reason": standby_reason,
+        "lease_expires_at": lease_expires_at,
+        "lease_owner": lease_owner,
+        "lease_remaining_seconds": lease_remaining_seconds,
+        "standby_auto_resume": standby_auto_resume,
+        "lease_expired": lease_expired,
         "last_status": last_status,
         "last_stage": last_stage,
         "last_message": last_message,
@@ -409,6 +526,9 @@ class ProcessManager:
         self.log_buffer.clear()
         self.current_params = {"count": count, "concurrency": concurrency}
         self.start_time = time.time()
+        self.success_count = 0
+        self.fail_count = 0
+        _write_solver_control_state(_build_solver_control_base(status="idle", message="startup_reset"))
 
         remote_nodes = _read_remote_solver_nodes()
         if not remote_nodes:
@@ -529,6 +649,123 @@ class ProcessManager:
             self.is_running = False
             return False
 
+    def _kill_process_tree(self) -> bool:
+        if not self.process or self.process.poll() is not None:
+            self.is_running = False
+            return False
+
+        process = self.process
+        try:
+            if os.name == 'nt':
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                    capture_output=True,
+                )
+            else:
+                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            self.process = None
+            self.is_running = False
+            return True
+        except Exception as e:
+            self.log_buffer.append(f"[错误] 终止进程失败: {str(e)}")
+            return False
+
+    async def request_stop(
+        self,
+        reason: str = "manual_stop_requested",
+        requested_by: str = "web_server_stop",
+        wait_timeout: float | None = None,
+    ) -> dict[str, Any]:
+        if not self.process or self.process.poll() is not None:
+            self.is_running = False
+            return {
+                "ok": False,
+                "status": "Idle",
+                "message": "not_running",
+                "forced": False,
+                "control": _load_solver_control_state(),
+            }
+
+        process = self.process
+        snapshot = _load_solver_cluster_snapshot()
+        scheduler = snapshot.get("scheduler", {}) if isinstance(snapshot.get("scheduler", {}), dict) else {}
+        drain = snapshot.get("drain", {}) if isinstance(snapshot.get("drain", {}), dict) else {}
+        grace_seconds = max(
+            _safe_float(scheduler.get("drain_grace_seconds", drain.get("grace_seconds", 20.0)), 20.0),
+            0.0,
+        )
+        effective_wait_timeout = max(wait_timeout or 0.0, grace_seconds + 15.0, MANUAL_STOP_WAIT_TIMEOUT_SECONDS)
+        request_id = f"stop-{int(time.time() * 1000)}-{''.join(random.choices(string.ascii_lowercase + string.digits, k=6))}"
+        control_request = _build_solver_control_base(status="requested", message="manual_stop_requested")
+        control_request.update(
+            {
+                "request_id": request_id,
+                "action": "drain_all_nodes",
+                "requested_at": round(time.time(), 3),
+                "requested_by": requested_by,
+                "reason": reason,
+                "grace_seconds": round(grace_seconds, 3),
+                "enter_standby": True,
+                "graceful": True,
+                "shutdown_after_drain": True,
+                "target_pid": process.pid,
+            }
+        )
+        _write_solver_control_state(control_request)
+        self.log_buffer.append(
+            f"[控制台] 已写入停止控制指令：request_id={request_id}, pid={process.pid}, grace={round(grace_seconds, 3)}s"
+        )
+
+        deadline = time.time() + effective_wait_timeout
+        last_control_state = control_request
+        last_status = "requested"
+        while time.time() < deadline:
+            if process.poll() is not None:
+                self.is_running = False
+                last_control_state = _load_solver_control_state()
+                self.log_buffer.append("[控制台] 注册引擎已按控制通道停止。")
+                return {
+                    "ok": True,
+                    "status": "Idle",
+                    "message": "stopped_by_control_channel",
+                    "forced": False,
+                    "control": last_control_state,
+                }
+
+            await asyncio.sleep(MANUAL_STOP_POLL_INTERVAL_SECONDS)
+            last_control_state = _load_solver_control_state()
+            if str(last_control_state.get("request_id") or "") != request_id:
+                continue
+            last_status = str(last_control_state.get("status") or "").strip().lower()
+            if last_status in {"failed", "ignored", "forced_terminated", "force_terminate_failed"}:
+                break
+
+        self.log_buffer.append("[控制台] 控制通道停止超时，开始强制终止注册进程...")
+        forced_ok = self._kill_process_tree()
+        force_state = dict(last_control_state if isinstance(last_control_state, dict) else {})
+        force_state.update(
+            {
+                "request_id": request_id,
+                "action": "drain_all_nodes",
+                "requested_by": requested_by,
+                "reason": reason,
+                "target_pid": process.pid,
+                "finished_at": round(time.time(), 3),
+                "status": "forced_terminated" if forced_ok else "force_terminate_failed",
+                "message": f"force_killed_after_{last_status or 'timeout'}",
+            }
+        )
+        _write_solver_control_state(force_state)
+        if forced_ok:
+            self.log_buffer.append("[控制台] 注册引擎已被强制终止。")
+        return {
+            "ok": forced_ok,
+            "status": "Idle" if forced_ok else self.get_status(),
+            "message": force_state["message"],
+            "forced": True,
+            "control": force_state,
+        }
+
     def stop(self) -> bool:
         """强制终止注册脚本子进程。"""
         if not self.process or self.process.poll() is not None:
@@ -536,21 +773,10 @@ class ProcessManager:
             return False
 
         self.log_buffer.append("[控制台] 收到停止信号，正在终止进程...")
-        try:
-            if os.name == 'nt':
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(self.process.pid)],
-                    capture_output=True
-                )
-            else:
-                os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
-            self.process = None
-            self.is_running = False
+        ok = self._kill_process_tree()
+        if ok:
             self.log_buffer.append("[控制台] 注册引擎已停止。")
-            return True
-        except Exception as e:
-            self.log_buffer.append(f"[错误] 终止进程失败: {str(e)}")
-            return False
+        return ok
 
     def _read_output(self):
         """后台线程：逐块读取子进程二进制输出，手动分行实现真正的实时推送"""
@@ -803,12 +1029,26 @@ def control_run(req: RunRequest):
     return {"message": f"启动成功：注册 {req.count} 个，并发 {req.concurrency} 路", "status": "Running"}
 
 @app.post("/api/control/stop")
-def control_stop():
+async def control_stop():
     """停止注册脚本"""
-    ok = pm.stop()
-    if not ok:
-        return {"message": "当前没有运行中的任务。", "status": "Idle"}
-    return {"message": "进程已终止。", "status": "Idle"}
+    result = await pm.request_stop(reason="manual_stop_requested", requested_by="web_server_stop")
+    if not result.get("ok") and str(result.get("message") or "") == "not_running":
+        return {"message": "当前没有运行中的任务。", "status": "Idle", "forced": False}
+    if not result.get("ok"):
+        raise HTTPException(status_code=500, detail=f"停止失败：{result.get('message', 'unknown_error')}")
+    if result.get("forced"):
+        return {
+            "message": "远程排空等待超时，已强制终止进程。",
+            "status": result.get("status", "Idle"),
+            "forced": True,
+            "control": result.get("control", {}),
+        }
+    return {
+        "message": "已通过控制通道触发远程排空，注册进程已停止。",
+        "status": result.get("status", "Idle"),
+        "forced": False,
+        "control": result.get("control", {}),
+    }
 
 
 # ========== 代理池 API 透传路由 ==========
@@ -984,6 +1224,7 @@ async def solver_status_api():
     """聚合所有 Solver 节点的实时统计，并合并注册主进程输出的调度器快照。"""
     configured_nodes = _read_remote_solver_nodes()
     snapshot = _load_solver_cluster_snapshot()
+    control_snapshot = _load_solver_control_state()
     snapshot_nodes = {
         normalized: node
         for node in snapshot.get("nodes", []) if isinstance(node, dict)
@@ -1012,6 +1253,10 @@ async def solver_status_api():
     snapshot_reinit = snapshot.get("reinit", {}) if isinstance(snapshot.get("reinit", {}), dict) else {}
     snapshot_network_diagnostics = snapshot.get("network_diagnostics", {}) if isinstance(snapshot.get("network_diagnostics", {}), dict) else {}
     snapshot_solver_diagnostics = snapshot.get("solver_diagnostics", {}) if isinstance(snapshot.get("solver_diagnostics", {}), dict) else {}
+    snapshot_drain = snapshot.get("drain", {}) if isinstance(snapshot.get("drain", {}), dict) else {}
+    snapshot_resume = snapshot.get("resume", {}) if isinstance(snapshot.get("resume", {}), dict) else {}
+    snapshot_lease = snapshot.get("lease", {}) if isinstance(snapshot.get("lease", {}), dict) else {}
+    snapshot_lifecycle = snapshot.get("lifecycle", {}) if isinstance(snapshot.get("lifecycle", {}), dict) else {}
     scheduler = {
         "queue_wait_timeout": round(_safe_float(snapshot_scheduler.get("queue_wait_timeout", 0.0)), 3),
         "token_timeout": _safe_int(snapshot_scheduler.get("token_timeout", 0)),
@@ -1037,6 +1282,10 @@ async def solver_status_api():
         "reinit_max_targets": _safe_int(snapshot_scheduler.get("reinit_max_targets", snapshot_reinit.get("max_targets", 0))),
         "reinit_allow_broadcast": bool(snapshot_scheduler.get("reinit_allow_broadcast", snapshot_reinit.get("allow_broadcast", False))),
         "reinit_requested_by": str(snapshot_scheduler.get("reinit_requested_by", snapshot_reinit.get("requested_by", "")) or ""),
+        "drain_on_batch_finish": bool(snapshot_scheduler.get("drain_on_batch_finish", False)),
+        "drain_grace_seconds": round(_safe_float(snapshot_scheduler.get("drain_grace_seconds", 0.0)), 3),
+        "heartbeat_interval_seconds": round(_safe_float(snapshot_scheduler.get("heartbeat_interval_seconds", snapshot.get("heartbeat_interval_seconds", 0.0))), 3),
+        "lease_ttl_seconds": round(_safe_float(snapshot_scheduler.get("lease_ttl_seconds", snapshot_lease.get("lease_ttl_seconds", 0.0))), 3),
     }
 
     async with httpx.AsyncClient(timeout=3, trust_env=False) as client:
@@ -1073,9 +1322,13 @@ async def solver_status_api():
     per_node_prefetch_limit = max(_safe_int(scheduler.get("per_node_prefetch", 0)), 0)
 
     def _node_direct_ready(item: dict[str, Any]) -> bool:
+        lifecycle_state = str(item.get("lifecycle_state") or "").strip().lower()
         return (
             bool(item.get("online"))
             and not bool(item.get("breaker_active"))
+            and bool(item.get("accepting_new_tasks", True))
+            and not bool(item.get("lease_expired"))
+            and lifecycle_state not in {"draining", "standby", "reinitializing", "offline"}
             and _safe_int(item.get("available_browsers", 0)) > 0
             and _safe_int(item.get("effective_capacity", 0)) > 0
             and _safe_int(item.get("health_score", 0)) >= direct_min_health_score
@@ -1095,6 +1348,7 @@ async def solver_status_api():
         not bool(item.get("online")),
         bool(item.get("breaker_active")),
         bool(item.get("soft_penalty_active")),
+        str(item.get("lifecycle_state") or "") in {"draining", "standby", "reinitializing"},
         bool(item.get("busy")),
         -_safe_int(item.get("health_score", 0)),
         item.get("url", ""),
@@ -1112,7 +1366,13 @@ async def solver_status_api():
     breaker_nodes = sum(1 for n in node_statuses if n.get("breaker_active"))
     busy_nodes = sum(1 for n in node_statuses if n.get("busy"))
     degraded_nodes = sum(1 for n in node_statuses if n.get("degraded"))
-    reinitializing_nodes = sum(1 for n in node_statuses if n.get("reinit_in_progress"))
+    reinitializing_nodes = _safe_int(snapshot_summary.get("reinitializing_nodes", sum(1 for n in node_statuses if n.get("reinit_in_progress") or str(n.get("lifecycle_state") or "") == "reinitializing")))
+    active_nodes = _safe_int(snapshot_summary.get("active_nodes", sum(1 for n in node_statuses if str(n.get("lifecycle_state") or "") == "active")))
+    draining_nodes = _safe_int(snapshot_summary.get("draining_nodes", sum(1 for n in node_statuses if str(n.get("lifecycle_state") or "") == "draining")))
+    standby_nodes = _safe_int(snapshot_summary.get("standby_nodes", sum(1 for n in node_statuses if str(n.get("lifecycle_state") or "") == "standby")))
+    offline_nodes = _safe_int(snapshot_summary.get("offline_nodes", sum(1 for n in node_statuses if str(n.get("lifecycle_state") or "") == "offline" or not n.get("online"))))
+    accepting_disabled_nodes = _safe_int(snapshot_summary.get("accepting_disabled_nodes", sum(1 for n in node_statuses if n.get("online") and not bool(n.get("accepting_new_tasks", True)))))
+    lease_expired_nodes = _safe_int(snapshot_summary.get("lease_expired_nodes", sum(1 for n in node_statuses if n.get("online") and bool(n.get("lease_expired")))))
     direct_ready_nodes = sum(1 for n in node_statuses if _node_direct_ready(n))
     prefetch_ready_nodes = sum(1 for n in node_statuses if _node_prefetch_ready(n))
     online_health_scores = [_safe_int(n.get("health_score", 0)) for n in node_statuses if n.get("online")]
@@ -1205,6 +1465,107 @@ async def solver_status_api():
     if not isinstance(solver_diag_failed_targets, list):
         solver_diag_failed_targets = list(reinit["last_failed_targets"])
 
+    drain_targets = snapshot_drain.get("targets", snapshot.get("last_drain_targets", []))
+    if not isinstance(drain_targets, list):
+        drain_targets = []
+    drain_results = snapshot_drain.get("results", snapshot.get("last_drain_results", []))
+    if not isinstance(drain_results, list):
+        drain_results = []
+    drain = {
+        "ok": bool(snapshot_drain.get("ok", True)),
+        "action": str(snapshot_drain.get("action") or "drain_all_nodes"),
+        "message": str(snapshot_drain.get("message") or ""),
+        "reason": str(snapshot_drain.get("reason", snapshot.get("last_drain_reason", "")) or ""),
+        "requested_by": str(snapshot_drain.get("requested_by") or ""),
+        "source": str(snapshot_drain.get("source") or ""),
+        "requested_at": _safe_float(snapshot_drain.get("requested_at", snapshot.get("last_drain_at", 0.0))),
+        "finished_at": _safe_float(snapshot_drain.get("finished_at", 0.0)),
+        "targets": drain_targets,
+        "results": drain_results,
+        "success_count": _safe_int(snapshot_drain.get("success_count", 0)),
+        "skip_count": _safe_int(snapshot_drain.get("skip_count", 0)),
+        "fail_count": _safe_int(snapshot_drain.get("fail_count", 0)),
+        "accepted_count": _safe_int(snapshot_drain.get("accepted_count", 0)),
+        "in_progress": bool(snapshot_drain.get("in_progress", snapshot.get("drain_in_progress", False))),
+    }
+
+    resume_targets = snapshot_resume.get("targets", snapshot.get("last_resume_targets", []))
+    if not isinstance(resume_targets, list):
+        resume_targets = []
+    resume_results = snapshot_resume.get("results", snapshot.get("last_resume_results", []))
+    if not isinstance(resume_results, list):
+        resume_results = []
+    resume = {
+        "ok": bool(snapshot_resume.get("ok", True)),
+        "action": str(snapshot_resume.get("action") or "resume_all_nodes"),
+        "message": str(snapshot_resume.get("message") or ""),
+        "reason": str(snapshot_resume.get("reason", snapshot.get("last_resume_reason", "")) or ""),
+        "requested_by": str(snapshot_resume.get("requested_by") or ""),
+        "source": str(snapshot_resume.get("source") or ""),
+        "requested_at": _safe_float(snapshot_resume.get("requested_at", snapshot.get("last_resume_at", 0.0))),
+        "finished_at": _safe_float(snapshot_resume.get("finished_at", 0.0)),
+        "targets": resume_targets,
+        "results": resume_results,
+        "success_count": _safe_int(snapshot_resume.get("success_count", 0)),
+        "skip_count": _safe_int(snapshot_resume.get("skip_count", 0)),
+        "fail_count": _safe_int(snapshot_resume.get("fail_count", 0)),
+        "accepted_count": _safe_int(snapshot_resume.get("accepted_count", 0)),
+    }
+
+    lease_targets = snapshot_lease.get("targets", snapshot.get("last_lease_targets", []))
+    if not isinstance(lease_targets, list):
+        lease_targets = []
+    lease_results = snapshot_lease.get("results", snapshot.get("last_lease_results", []))
+    if not isinstance(lease_results, list):
+        lease_results = []
+    lease = {
+        "ok": bool(snapshot_lease.get("ok", True)),
+        "action": str(snapshot_lease.get("action") or "renew_all_leases"),
+        "message": str(snapshot_lease.get("message") or ""),
+        "reason": str(snapshot_lease.get("reason") or ""),
+        "requested_at": _safe_float(snapshot_lease.get("requested_at", snapshot.get("last_lease_at", 0.0))),
+        "finished_at": _safe_float(snapshot_lease.get("finished_at", 0.0)),
+        "targets": lease_targets,
+        "results": lease_results,
+        "success_count": _safe_int(snapshot_lease.get("success_count", 0)),
+        "skip_count": _safe_int(snapshot_lease.get("skip_count", 0)),
+        "fail_count": _safe_int(snapshot_lease.get("fail_count", 0)),
+        "accepted_count": _safe_int(snapshot_lease.get("accepted_count", 0)),
+        "heartbeat_running": bool(snapshot_lease.get("heartbeat_running", snapshot.get("heartbeat_running", False))),
+        "interval_seconds": round(_safe_float(snapshot_lease.get("interval_seconds", snapshot.get("heartbeat_interval_seconds", scheduler.get("heartbeat_interval_seconds", 0.0)))), 3),
+        "lease_owner": str(snapshot_lease.get("lease_owner") or ""),
+        "lease_ttl_seconds": round(_safe_float(snapshot_lease.get("lease_ttl_seconds", scheduler.get("lease_ttl_seconds", 0.0))), 3),
+    }
+
+    lifecycle = {
+        "active_nodes": _safe_int(snapshot_lifecycle.get("active_nodes", active_nodes)),
+        "draining_nodes": _safe_int(snapshot_lifecycle.get("draining_nodes", draining_nodes)),
+        "standby_nodes": _safe_int(snapshot_lifecycle.get("standby_nodes", standby_nodes)),
+        "reinitializing_nodes": _safe_int(snapshot_lifecycle.get("reinitializing_nodes", reinitializing_nodes)),
+        "offline_nodes": _safe_int(snapshot_lifecycle.get("offline_nodes", offline_nodes)),
+        "accepting_disabled_nodes": _safe_int(snapshot_lifecycle.get("accepting_disabled_nodes", accepting_disabled_nodes)),
+        "lease_expired_nodes": _safe_int(snapshot_lifecycle.get("lease_expired_nodes", lease_expired_nodes)),
+    }
+
+    control_result = control_snapshot.get("result", {}) if isinstance(control_snapshot.get("result", {}), dict) else {}
+    control = {
+        "request_id": str(control_snapshot.get("request_id") or ""),
+        "action": str(control_snapshot.get("action") or ""),
+        "status": str(control_snapshot.get("status") or "idle"),
+        "requested_at": _safe_float(control_snapshot.get("requested_at", 0.0)),
+        "requested_by": str(control_snapshot.get("requested_by") or ""),
+        "reason": str(control_snapshot.get("reason") or ""),
+        "grace_seconds": round(_safe_float(control_snapshot.get("grace_seconds", scheduler.get("drain_grace_seconds", 0.0))), 3),
+        "enter_standby": bool(control_snapshot.get("enter_standby", True)),
+        "graceful": bool(control_snapshot.get("graceful", True)),
+        "shutdown_after_drain": bool(control_snapshot.get("shutdown_after_drain", True)),
+        "target_pid": _safe_int(control_snapshot.get("target_pid", 0)),
+        "handled_at": _safe_float(control_snapshot.get("handled_at", 0.0)),
+        "finished_at": _safe_float(control_snapshot.get("finished_at", 0.0)),
+        "message": str(control_snapshot.get("message") or ""),
+        "result": control_result,
+    }
+
     network_diagnostics = {
         "tls_error_count": _safe_int(snapshot_network_diagnostics.get("tls_error_count", 0)),
         "signup_preflight_error_count": _safe_int(snapshot_network_diagnostics.get("signup_preflight_error_count", 0)),
@@ -1241,9 +1602,15 @@ async def solver_status_api():
         "soft_penalty_nodes": _safe_int(snapshot_summary.get("soft_penalty_nodes", soft_penalty_nodes)),
         "breaker_nodes": _safe_int(snapshot_summary.get("breaker_nodes", breaker_nodes)),
         "busy_nodes": _safe_int(snapshot_summary.get("busy_nodes", busy_nodes)),
-        "reinitializing_nodes": reinitializing_nodes,
         "direct_ready_nodes": _safe_int(snapshot_summary.get("direct_ready_nodes", direct_ready_nodes)),
         "prefetch_ready_nodes": _safe_int(snapshot_summary.get("prefetch_ready_nodes", prefetch_ready_nodes)),
+        "active_nodes": lifecycle["active_nodes"],
+        "draining_nodes": lifecycle["draining_nodes"],
+        "standby_nodes": lifecycle["standby_nodes"],
+        "reinitializing_nodes": lifecycle["reinitializing_nodes"],
+        "offline_nodes": lifecycle["offline_nodes"],
+        "accepting_disabled_nodes": lifecycle["accepting_disabled_nodes"],
+        "lease_expired_nodes": lifecycle["lease_expired_nodes"],
         "avg_health_score": round(_safe_float(snapshot_summary.get("avg_health_score", avg_health_score)), 3),
         "available_browsers": total_available,
         "raw_available_browsers": total_raw_available,
@@ -1264,11 +1631,30 @@ async def solver_status_api():
         "running": bool(token_queue.get("running")),
         "reason": token_queue.get("reason", ""),
         "updated_at": snapshot_updated_at,
+        "drain_in_progress": bool(snapshot.get("drain_in_progress", drain["in_progress"])),
+        "last_drain_at": _safe_float(snapshot.get("last_drain_at", drain["requested_at"])),
+        "last_drain_reason": str(snapshot.get("last_drain_reason", drain["reason"]) or ""),
+        "last_drain_targets": list(snapshot.get("last_drain_targets", drain["targets"]) or []),
+        "last_drain_results": list(snapshot.get("last_drain_results", drain["results"]) or []),
+        "last_resume_at": _safe_float(snapshot.get("last_resume_at", resume["requested_at"])),
+        "last_resume_reason": str(snapshot.get("last_resume_reason", resume["reason"]) or ""),
+        "last_resume_targets": list(snapshot.get("last_resume_targets", resume["targets"]) or []),
+        "last_resume_results": list(snapshot.get("last_resume_results", resume["results"]) or []),
+        "last_lease_at": _safe_float(snapshot.get("last_lease_at", lease["requested_at"])),
+        "last_lease_targets": list(snapshot.get("last_lease_targets", lease["targets"]) or []),
+        "last_lease_results": list(snapshot.get("last_lease_results", lease["results"]) or []),
+        "heartbeat_running": bool(snapshot.get("heartbeat_running", lease["heartbeat_running"])),
+        "heartbeat_interval_seconds": round(_safe_float(snapshot.get("heartbeat_interval_seconds", lease["interval_seconds"])), 3),
         "nodes": node_statuses,
         "summary": summary,
         "token_queue": token_queue,
         "scheduler": scheduler,
         "reinit": reinit,
+        "drain": drain,
+        "resume": resume,
+        "lease": lease,
+        "lifecycle": lifecycle,
+        "control": control,
         "network_diagnostics": network_diagnostics,
         "solver_diagnostics": solver_diagnostics,
     }
@@ -1422,7 +1808,7 @@ async def on_startup():
 @app.on_event("shutdown")
 async def on_shutdown():
     """Web 服务关闭时，自动终止注册机与 sing-box。"""
-    pm.stop()
+    await pm.request_stop(reason="web_server_shutdown", requested_by="web_server_shutdown", wait_timeout=8.0)
     singbox_pm.stop()
 
 
